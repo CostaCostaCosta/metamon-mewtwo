@@ -54,28 +54,28 @@ def parse_condition(raw: str) -> str:
 
 
 def parse_move_from_extra(raw: str) -> str:
-    move = re.sub(f"\[from\]\s?move:\s?", "", raw).strip()
+    move = re.sub(r"\[from\]\s?move:\s?", "", raw).strip()
     if "[from]" not in raw or "move" not in raw or not move:
         raise StrParsingException("parse_move_from_extra", raw)
     return move
 
 
 def parse_mon_from_extra(raw: str) -> str:
-    mon = re.sub(f"\[of\]\s?", "", raw).strip()
+    mon = re.sub(r"\[of\]\s?", "", raw).strip()
     if "[of]" not in raw or not mon:
         raise StrParsingException("parse_mon_from_extra", raw)
     return mon
 
 
 def parse_ability_from_extra(raw: str) -> str:
-    ability = re.sub(f"\[from\]\s?ability:\s?", "", raw).strip()
+    ability = re.sub(r"\[from\]\s?ability:\s?", "", raw).strip()
     if "[from]" not in raw or "ability" not in raw or not ability:
         raise StrParsingException("parse_ability_from_extra", raw)
     return ability
 
 
 def parse_item_from_extra(raw: str) -> str:
-    item = re.sub(f"\[from\]\s?item:\s?", "", raw).strip()
+    item = re.sub(r"\[from\]\s?item:\s?", "", raw).strip()
     if "[from]" not in raw or "item" not in raw or not item:
         raise StrParsingException("parse_item_from_extra", raw)
     return item
