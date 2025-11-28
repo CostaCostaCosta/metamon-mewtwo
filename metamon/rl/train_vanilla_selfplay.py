@@ -2,6 +2,15 @@
 """
 Iterative vanilla self-play training loop with optional dynamic damping.
 
+**NOTE**: This script is an OPTIONAL orchestrator that automates the manual workflow.
+For more control and transparency, you can use the existing production-ready scripts:
+    - scripts/generate_selfplay_data.py (data collection)
+    - scripts/filter_selfplay_data.py (quality filtering)
+    - metamon.rl.finetune_from_hf (training with dynamic damping)
+    - scripts/self_play_tournament.py (evaluation)
+
+See GEN1OU_SELFPLAY_GUIDE.md for the recommended manual workflow.
+
 This script implements a simple self-play loop:
     1. Collect self-play data from current checkpoint
     2. Train on collected data (with optional dynamic damping)

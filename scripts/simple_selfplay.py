@@ -16,6 +16,7 @@ Usage:
 import os
 import sys
 import time
+import glob
 import subprocess
 import argparse
 from pathlib import Path
@@ -153,19 +154,37 @@ def main():
     print(f"✓ All {args.num_players} players launched!")
     print()
     print("Monitor progress with:")
-    print(f"  ls {traj_dir / args.format}/*.json.lz4 | wc -l")
     print(f"  tail -f {output_dir / 'player1.log'}")
     print()
-    print("Waiting for battles to complete...")
 
-    # Wait for all processes
+    # Wait for all processes with progress monitoring
     try:
-        exit_codes = []
-        for i, proc in enumerate(processes):
-            exit_code = proc.wait()
-            exit_codes.append(exit_code)
-            if (i + 1) % 10 == 0:
-                print(f"  {i+1}/{args.num_players} players finished...")
+        traj_path = traj_dir / args.format
+        traj_path.mkdir(parents=True, exist_ok=True)
+
+        # Monitor progress while processes are running
+        last_count = 0
+        while any(proc.poll() is None for proc in processes):
+            # Count trajectory files (2 per battle)
+            trajectory_files = glob.glob(str(traj_path / "*.json.lz4"))
+            battles_completed = len(trajectory_files) // 2
+
+            if battles_completed != last_count:
+                last_count = battles_completed
+                progress = min(100, int(battles_completed / expected_total * 100))
+                bar_length = 40
+                filled = int(bar_length * progress / 100)
+                bar = '=' * filled + '>' * (1 if progress < 100 else 0) + ' ' * (bar_length - filled - (1 if progress < 100 else 0))
+
+                print(f"\r[{bar}] {battles_completed}/{expected_total} battles ({progress}%)", end='', flush=True)
+
+            time.sleep(2)
+
+        print()  # New line after progress bar
+
+        # Collect exit codes
+        exit_codes = [proc.wait() for proc in processes]
+
     except KeyboardInterrupt:
         print("\n\nInterrupted! Terminating all players...")
         for proc in processes:

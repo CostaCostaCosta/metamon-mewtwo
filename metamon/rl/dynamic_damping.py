@@ -222,7 +222,8 @@ class DynamicDampingState:
 def compute_masked_reverse_kl(new_logits: torch.Tensor,
                                ref_logits: torch.Tensor,
                                legal_mask: torch.Tensor,
-                               eps: float = 1e-8) -> torch.Tensor:
+                               eps: float = 1e-8,
+                               already_masked: bool = True) -> torch.Tensor:
     """Compute reverse KL divergence: KL(π_new || π_ref) with action masking.
 
     Reverse KL is defined as:
@@ -233,7 +234,7 @@ def compute_masked_reverse_kl(new_logits: torch.Tensor,
     placing mass where reference policy has low probability.
 
     Important: This function properly handles illegal actions by:
-    1. Masking logits with -inf for illegal actions
+    1. Masking logits with -inf for illegal actions (if not already masked)
     2. Computing log-probabilities only over legal actions
     3. Ensuring KL computation respects the constrained action space
 
@@ -242,25 +243,32 @@ def compute_masked_reverse_kl(new_logits: torch.Tensor,
         ref_logits: Logits from reference policy [batch_size, num_actions]
         legal_mask: Binary mask (1=legal, 0=illegal) [batch_size, num_actions]
         eps: Small constant for numerical stability
+        already_masked: If True, assumes logits are already masked with -inf for illegal actions
 
     Returns:
         KL divergence per example [batch_size]
     """
-    # Mask illegal actions with large negative value
-    minus_inf = -1e9
-    mask_value = (legal_mask.float() - 1.0) * minus_inf  # 0 for legal, -inf for illegal
-
-    new_logits_masked = new_logits + mask_value
-    ref_logits_masked = ref_logits + mask_value
+    # Only mask if not already masked (avoids double masking issues)
+    if not already_masked:
+        minus_inf = -1e9
+        mask_value = (~legal_mask).float() * minus_inf  # 0 for legal, -inf for illegal
+        new_logits = new_logits + mask_value
+        ref_logits = ref_logits + mask_value
 
     # Compute log probabilities (softmax automatically handles -inf masking)
-    log_probs_new = torch.log_softmax(new_logits_masked, dim=-1)
-    log_probs_ref = torch.log_softmax(ref_logits_masked, dim=-1)
+    log_probs_new = torch.log_softmax(new_logits, dim=-1)
+    log_probs_ref = torch.log_softmax(ref_logits, dim=-1)
 
     # Compute probabilities from new policy
     probs_new = torch.exp(log_probs_new)
 
+    # Replace -inf with 0 in log probs to avoid NaN from 0 * -inf
+    log_probs_new = torch.where(legal_mask, log_probs_new, torch.zeros_like(log_probs_new))
+    log_probs_ref = torch.where(legal_mask, log_probs_ref, torch.zeros_like(log_probs_ref))
+    probs_new = torch.where(legal_mask, probs_new, torch.zeros_like(probs_new))
+
     # Reverse KL: KL(new || ref) = Σ p_new * (log p_new - log p_ref)
+    # Only sum over legal actions (illegal actions contribute 0)
     kl_per_example = (probs_new * (log_probs_new - log_probs_ref)).sum(dim=-1)
 
     return kl_per_example
@@ -268,7 +276,8 @@ def compute_masked_reverse_kl(new_logits: torch.Tensor,
 
 def compute_policy_entropy(logits: torch.Tensor,
                            legal_mask: torch.Tensor,
-                           eps: float = 1e-8) -> torch.Tensor:
+                           eps: float = 1e-8,
+                           already_masked: bool = True) -> torch.Tensor:
     """Compute policy entropy with action masking.
 
     Entropy measures the randomness/exploration of the policy:
@@ -281,20 +290,26 @@ def compute_policy_entropy(logits: torch.Tensor,
         logits: Policy logits [batch_size, num_actions]
         legal_mask: Binary mask (1=legal, 0=illegal) [batch_size, num_actions]
         eps: Small constant for numerical stability
+        already_masked: If True, assumes logits are already masked with -inf for illegal actions
 
     Returns:
         Entropy per example [batch_size]
     """
-    # Mask illegal actions
-    minus_inf = -1e9
-    mask_value = (legal_mask.float() - 1.0) * minus_inf
-    logits_masked = logits + mask_value
+    # Only mask if not already masked
+    if not already_masked:
+        minus_inf = -1e9
+        mask_value = (~legal_mask).float() * minus_inf
+        logits = logits + mask_value
 
     # Compute log probabilities
-    log_probs = torch.log_softmax(logits_masked, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
     probs = torch.exp(log_probs)
 
-    # Entropy: H = -Σ p * log(p)
+    # Replace -inf with 0 to avoid NaN from 0 * -inf
+    log_probs = torch.where(legal_mask, log_probs, torch.zeros_like(log_probs))
+    probs = torch.where(legal_mask, probs, torch.zeros_like(probs))
+
+    # Entropy: H = -Σ p * log(p) (only over legal actions, illegal actions contribute 0)
     entropy_per_example = -(probs * log_probs).sum(dim=-1)
 
     return entropy_per_example

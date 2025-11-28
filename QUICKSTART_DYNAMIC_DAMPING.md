@@ -1,178 +1,293 @@
-# Quick Start: Dynamic Damping Experiments
+# Quick Start: Gen1 OU Self-Play with Dynamic Damping
 
-## TL;DR
+## TL;DR - Run These Commands
 
-Dynamic damping is implemented and ready to use. Run these commands to start experiments:
-
-### 1. Baseline Experiment (No Damping)
+### Setup
 ```bash
 cd /home/eddie/repos/metamon
 source .venv/bin/activate
-export METAMON_CACHE_DIR=/tmp/metamon_cache
+export METAMON_CACHE_DIR=/home/eddie/metamon_cache
 
-python -m metamon.rl.train_vanilla_selfplay \
-  --run_name Baseline_$(date +%Y%m%d) \
-  --init_checkpoint SyntheticRLV2 \
-  --num_iterations 10 \
-  --epochs_per_iteration 20 \
-  --episodes_per_iteration 5000 \
-  --save_dir ~/experiments/selfplay_baseline \
-  --train_gin_config vanilla_selfplay_baseline.gin \
-  --model_gin_config small_agent.gin
+# Ensure Pokémon Showdown server is running
+cd server/pokemon-showdown && node pokemon-showdown start --no-security &
+cd ../..
 ```
 
-### 2. Dynamic Damping Experiment
+### Baseline Experiment (No Damping)
 ```bash
-python -m metamon.rl.train_vanilla_selfplay \
-  --run_name Damped_$(date +%Y%m%d) \
-  --init_checkpoint SyntheticRLV2 \
-  --num_iterations 10 \
-  --epochs_per_iteration 20 \
-  --episodes_per_iteration 5000 \
-  --save_dir ~/experiments/selfplay_damped \
-  --train_gin_config vanilla_selfplay_damped.gin \
-  --model_gin_config small_agent.gin
+# Collect self-play data
+python scripts/generate_selfplay_data.py \
+  --model SyntheticRLV2 \
+  --num_battles 50000 \
+  --battle_format gen1ou \
+  --team_set modern_replays_v2 \
+  --output_dir ~/gen1_baseline/gen0 \
+  --parallel_instances 4
+
+# Filter data
+python scripts/filter_selfplay_data.py \
+  --input_dir ~/gen1_baseline/gen0/trajectories \
+  --output_dir ~/gen1_baseline/gen0_filtered \
+  --max_invalid_rate 0.05 \
+  --balance_outcomes
+
+# Train Generation 1 (no damping)
+python -m metamon.rl.finetune_from_hf \
+  --finetune_from_model SyntheticRLV2 \
+  --run_name Baseline_Gen1_$(date +%Y%m%d) \
+  --custom_replay_dir ~/gen1_baseline/gen0_filtered \
+  --formats gen1ou \
+  --train_gin_config vanilla_selfplay_baseline.gin \
+  --epochs 20 \
+  --save_dir ~/gen1_checkpoints/baseline_gen1 \
+  --battle_format gen1ou \
+  --team_set modern_replays_v2 \
+  --log
 ```
+
+### Dynamic Damping Experiment
+```bash
+# Same data collection
+python scripts/generate_selfplay_data.py \
+  --model SyntheticRLV2 \
+  --num_battles 50000 \
+  --battle_format gen1ou \
+  --output_dir ~/gen1_damped/gen0 \
+  --parallel_instances 4
+
+python scripts/filter_selfplay_data.py \
+  --input_dir ~/gen1_damped/gen0/trajectories \
+  --output_dir ~/gen1_damped/gen0_filtered \
+  --max_invalid_rate 0.05 \
+  --balance_outcomes
+
+# Train with dynamic damping
+python -m metamon.rl.finetune_from_hf \
+  --finetune_from_model SyntheticRLV2 \
+  --run_name Damped_Gen1_$(date +%Y%m%d) \
+  --custom_replay_dir ~/gen1_damped/gen0_filtered \
+  --formats gen1ou \
+  --train_gin_config vanilla_selfplay_damped.gin \  # ← Enables dynamic damping!
+  --epochs 20 \
+  --save_dir ~/gen1_checkpoints/damped_gen1 \
+  --battle_format gen1ou \
+  --team_set modern_replays_v2 \
+  --log
+```
+
+---
 
 ## What Was Implemented?
 
-### Core Components
-1. **Dynamic Damping Module** (`metamon/rl/dynamic_damping.py`)
-   - Reverse-KL regularization: KL(π_new || π_ref)
-   - Power-law schedules for entropy and KL coefficients
-   - Adaptive learning rate control
+### ✅ Dynamic Damping Core (`metamon/rl/dynamic_damping.py`)
+- Reverse-KL regularization: `KL(π_new || π_ref)`
+- Power-law coefficient schedules (smooth decay, no "entropy cliffs")
+- Adaptive learning rate and KL coefficient control
+- Action masking support for Pokémon's constrained action space
 
-2. **AMAGO Integration** (`metamon/rl/metamon_to_amago.py`)
-   - Extended `MetamonAMAGOExperiment` with damping hooks
-   - KL loss computation with action masking
-   - Automatic logging of damping metrics
+### ✅ AMAGO Integration (`metamon/rl/metamon_to_amago.py`)
+- Extended `MetamonAMAGOExperiment` with damping hooks
+- KL loss computation in `compute_loss()` override
+- Schedule updates in `train_step()`
+- Adaptive control in `train_epoch()`
+- Comprehensive logging of damping metrics
 
-3. **Configuration Files**
-   - `vanilla_selfplay_baseline.gin`: No damping (control)
-   - `vanilla_selfplay_damped.gin`: With damping
+### ✅ Configuration Files
+- `vanilla_selfplay_baseline.gin` - No damping (control)
+- `vanilla_selfplay_damped.gin` - With dynamic damping
 
-4. **Training Scripts**
-   - `collect_selfplay_data.py`: Collect self-play trajectories
-   - `train_vanilla_selfplay.py`: Iterative self-play loop
+### ✅ Documentation
+- `claude.md` - Updated with self-play infrastructure overview
+- `GEN1OU_SELFPLAY_GUIDE.md` - Complete workflow guide
+- `DYNAMIC_DAMPING_IMPLEMENTATION.md` - Technical details
+
+---
 
 ## Key Features
 
-✅ **Configurable via Gin**: Toggle damping on/off in config files
-✅ **Action Masking Support**: Properly handles Metamon's illegal actions
-✅ **Adaptive Control**: Automatically adjusts LR and KL coefficient
-✅ **Comprehensive Logging**: KL, entropy, LR, coefficients to WandB/TB
-✅ **Production Ready**: Fully tested and integrated
+### Dynamic Damping Prevents Policy Collapse
+
+**Without damping**: Policy can collapse, entropy drops suddenly, agent becomes deterministic too early
+
+**With damping**:
+- KL regularization keeps policy near reference
+- Smooth schedule prevents entropy cliffs
+- Adaptive control maintains stable update sizes
+
+### Fully Configurable
+
+All parameters controllable via gin config:
+```gin
+# KL regularization
+MetamonAMAGOExperiment.kl_coef_init = 0.05      # Initial strength
+MetamonAMAGOExperiment.kl_power_alpha = 0.5     # Decay rate
+
+# Entropy regularization
+MetamonAMAGOExperiment.ent_coef_init = 0.01     # Initial bonus
+MetamonAMAGOExperiment.ent_power_alpha = 0.7    # Decay rate
+
+# Adaptive control
+MetamonAMAGOExperiment.target_kl_per_step = 0.01  # Target KL
+MetamonAMAGOExperiment.kl_tolerance = 1.5         # ±50% band
+```
+
+### Production-Ready Infrastructure
+
+**Uses existing battle-tested scripts**:
+- `scripts/generate_selfplay_data.py` - Parallel data collection
+- `scripts/filter_selfplay_data.py` - Quality filtering
+- `scripts/self_play_tournament.py` - Evaluation
+- `metamon.rl.finetune_from_hf` - Training
+
+**No redundant implementations** - dynamic damping integrates seamlessly via gin configs.
+
+---
 
 ## Monitoring Your Experiments
 
-### Key Metrics to Watch
+### Key Metrics (WandB/TensorBoard)
 
-1. **KL Divergence**: Should hover around target (0.01 by default)
-   - Too high → updates too aggressive
-   - Too low → updates too conservative
+1. **KL Divergence** (`KL Divergence`)
+   - Should hover near target (default: 0.01)
+   - Too high → updates too conservative
+   - Too low → updates too aggressive
 
-2. **Policy Entropy**: Should decay smoothly (not cliff-like)
+2. **Policy Entropy** (`Policy Entropy`)
+   - Should decay smoothly (not cliff-like)
    - Sudden drops → increase entropy coefficient
-   - Too low too fast → agent becoming deterministic prematurely
 
-3. **Learning Rate**: Should stabilize after warmup
-   - Wild oscillations → adjust tolerance parameters
+3. **Learning Rate** (`Learning Rate`)
+   - Should stabilize after warmup
+   - Wild oscillations → adjust tolerance
 
-4. **Win Rate vs Baseline**: Track improvement over iterations
-   - Baseline vs SynRL-V2
-   - Damped vs SynRL-V2
-   - Damped vs Baseline
+4. **Damping Coefficients**
+   - `Damping/KL Coefficient` - Current KL weight
+   - `Damping/Entropy Coefficient` - Current entropy bonus
 
-### WandB Logging
+### Success Indicators
 
-Experiments automatically log to WandB if configured:
-```bash
-export METAMON_WANDB_PROJECT="metamon-selfplay"
-export METAMON_WANDB_ENTITY="your-entity"
-```
+✅ Damping is working if:
+- Entropy decays smoothly (no sudden drops)
+- KL stays near target (±tolerance)
+- Learning rate stabilizes
+- Training doesn't diverge or collapse
 
-Look for these metric groups:
-- `KL Divergence`, `Policy Entropy`
-- `Damping/KL Coefficient`, `Damping/Entropy Coefficient`
-- `Learning Rate`, `Actor Loss`, `Critic Loss`
+---
 
-## Expected Runtime
+## Expected Timeline
 
-Per iteration (rough estimates):
-- **Data Collection**: ~30-60 minutes (5000 battles)
-- **Training**: ~1-2 hours (20 epochs)
-- **Evaluation**: ~10-20 minutes (100 battles)
+**Per Generation** (50k battles, 20 epochs):
+- Data collection: 1-2 hours (parallel)
+- Filtering: 5-10 minutes
+- Training: 2-4 hours (GPU)
+- Evaluation: 30-60 minutes
 
-**Total for 10 iterations**: ~20-30 hours
+**5 generations**: ~20-40 hours total
+
+---
 
 ## Troubleshooting
 
-### "ModuleNotFoundError: No module named 'metamon'"
+### Environment Issues
 ```bash
-cd /home/eddie/repos/metamon
+# Activate venv
 source .venv/bin/activate
+
+# Set cache dir
+export METAMON_CACHE_DIR=/home/eddie/metamon_cache
+
+# Start server
+cd server/pokemon-showdown && node pokemon-showdown start --no-security
 ```
 
-### "Set METAMON_CACHE_DIR environment variable"
+### Format Mixing
+**CRITICAL**: Always use `--formats gen1ou` in training commands!
+
 ```bash
-export METAMON_CACHE_DIR=/tmp/metamon_cache
+python -m metamon.rl.finetune_from_hf \
+  --formats gen1ou \  # ← Prevents loading other formats
+  ...
 ```
 
-### "Connection refused" (Ladder errors)
-Make sure Pokemon Showdown server is running:
+### CUDA OOM
+Reduce batch size or increase gradient accumulation in gin config.
+
+---
+
+## Alternative: Automated Workflow
+
+For automation (less control, more convenience):
+
 ```bash
-cd /home/eddie/repos/metamon/server/pokemon-showdown
-node pokemon-showdown start --port 8000
+python -m metamon.rl.train_vanilla_selfplay \
+  --run_name Gen1_Automated \
+  --init_checkpoint SyntheticRLV2 \
+  --num_iterations 5 \
+  --epochs_per_iteration 20 \
+  --episodes_per_iteration 50000 \
+  --save_dir ~/gen1_automated \
+  --train_gin_config vanilla_selfplay_damped.gin \
+  --battle_format gen1ou
 ```
 
-### CUDA Out of Memory
-Reduce batch size or use gradient accumulation in gin config.
+**Note**: This orchestrator script is optional. For production experiments, the manual workflow (using existing scripts) is recommended for maximum control and transparency.
 
-## Next Steps After Experiments Complete
+---
 
-1. **Compare Results**:
-   - Plot Elo curves (baseline vs damped)
-   - Analyze entropy over time
-   - Check KL divergence patterns
+## Next Steps
 
-2. **If Damping Helps**:
-   - Tune hyperparameters (see DYNAMIC_DAMPING_IMPLEMENTATION.md)
-   - Extend to PSRO oracle training
-   - Test with different reference policies
+1. **Run both experiments** (baseline + damped) for 5 generations
+2. **Compare results**:
+   - Elo progression
+   - Win rates vs SynRL-V2
+   - Entropy curves
+   - Training stability
+3. **If promising**: Extend to PSRO oracle training
+4. **If not**: Tune hyperparameters (see `DYNAMIC_DAMPING_IMPLEMENTATION.md`)
 
-3. **If Damping Doesn't Help**:
-   - Try different damping strengths
-   - Adjust target KL values
-   - Consider league mixture reference
+---
 
 ## File Locations
 
 ```
 metamon/
 ├── rl/
-│   ├── dynamic_damping.py              # Core damping logic
+│   ├── dynamic_damping.py              # Core damping logic (NEW)
 │   ├── metamon_to_amago.py             # AMAGO integration (MODIFIED)
-│   ├── collect_selfplay_data.py        # Data collection script
-│   ├── train_vanilla_selfplay.py       # Main experiment script
+│   ├── train_vanilla_selfplay.py       # Optional orchestrator
 │   └── configs/training/
-│       ├── vanilla_selfplay_baseline.gin   # Config without damping
-│       └── vanilla_selfplay_damped.gin     # Config with damping
-└── DYNAMIC_DAMPING_IMPLEMENTATION.md   # Full documentation
+│       ├── vanilla_selfplay_baseline.gin   # No damping
+│       └── vanilla_selfplay_damped.gin     # With damping
+├── claude.md                           # Repository overview (UPDATED)
+├── GEN1OU_SELFPLAY_GUIDE.md           # Complete workflow guide
+└── DYNAMIC_DAMPING_IMPLEMENTATION.md  # Technical details
 ```
 
-## Questions or Issues?
+**Existing Production Scripts** (`scripts/`):
+- `generate_selfplay_data.py` - Data collection
+- `filter_selfplay_data.py` - Quality filtering
+- `self_play_tournament.py` - Evaluation
+- `calculate_elo.py` - ELO ratings
 
-Check the full documentation:
-- `DYNAMIC_DAMPING_IMPLEMENTATION.md`: Complete technical details
-- `metamon/rl/dynamic_damping.py`: Source code with docstrings
-- Original implementation plan: See git history for planning discussion
+---
 
-## Success Criteria
+## Documentation
 
-Your experiments are successful if:
-- ✅ Both baseline and damped experiments complete 10 iterations
-- ✅ Damped agent maintains entropy better than baseline
-- ✅ Damped agent achieves higher win rate vs SynRL-V2
-- ✅ Damped agent shows more stable learning curves
+- **`GEN1OU_SELFPLAY_GUIDE.md`** - Complete step-by-step guide
+- **`DYNAMIC_DAMPING_IMPLEMENTATION.md`** - Technical details and tuning
+- **`claude.md`** - Self-play infrastructure overview
+- **`scripts/README.md`** - Production scripts documentation
 
-Good luck with the experiments! 🚀
+---
+
+## Summary
+
+Dynamic damping is fully integrated and ready to use! Key points:
+
+✅ Uses existing production-ready scripts (don't reinvent the wheel)
+✅ Enable via gin config (`vanilla_selfplay_damped.gin`)
+✅ Always specify `--formats gen1ou` to prevent format mixing
+✅ Monitor KL, entropy, and LR for tuning
+✅ Compare baseline vs damped to measure impact
+
+Time to run experiments! 🚀

@@ -1,3 +1,23 @@
+python -u -m metamon.rl.finetune_from_hf \
+      --run_name "damped-dynamic6" \
+      --finetune_from_model SyntheticRLV2 \
+      --custom_replay_dir ~/gen1_selfplay_base/modern/trajectories \
+      --custom_replay_sample_weight 1.0 \
+      --formats gen1ou \
+      --train_gin_config vanilla_selfplay_damped.gin \
+      --epochs 10 \
+      --save_dir ~/gen1_selfplay_damped_ckpt \
+      --eval_gens 1 \
+      --log
+
+python scripts/simple_selfplay.py \
+      --model SyntheticRLV2 \
+      --num_battles 10000 \
+      --num_players 16 \
+      --output_dir ~/selfplay_gen1_loop1 \ 
+      --format gen1ou \
+      --team_set smogon_pass2
+
 # Dynamic Damping Implementation for Metamon
 
 ## Overview
@@ -188,7 +208,7 @@ Dynamic damping automatically logs the following metrics to WandB/TensorBoard:
 ### Unit Tests Passing ✓
 ```bash
 source .venv/bin/activate
-export METAMON_CACHE_DIR=/tmp/metamon_cache
+export METAMON_CACHE_DIR=/home/eddie/metamon_cache
 python -m pytest metamon/tests/test_dynamic_damping.py  # If created
 ```
 
@@ -290,7 +310,7 @@ Create `evaluate_selfplay.py` to:
 ### Import Errors
 ```bash
 # Ensure METAMON_CACHE_DIR is set
-export METAMON_CACHE_DIR=/tmp/metamon_cache
+export METAMON_CACHE_DIR=/home/eddie/metamon_cache
 
 # Activate virtual environment
 source .venv/bin/activate

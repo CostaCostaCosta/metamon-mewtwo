@@ -639,7 +639,11 @@ class MetamonAMAGOExperiment(amago.Experiment):
         max_lr: float = 1e-3,
         **kwargs,
     ):
+        # Debug: Print dynamic damping parameter
+        print(f"[DEBUG] MetamonAMAGOExperiment.__init__ called with use_dynamic_damping={use_dynamic_damping}", flush=True)
+
         super().__init__(*args, **kwargs)
+        print("[DEBUG] super().__init__() completed, policy exists:", hasattr(self, 'policy'), flush=True)
 
         # Dynamic damping state
         self.dd_state = None
@@ -648,6 +652,7 @@ class MetamonAMAGOExperiment(amago.Experiment):
 
         if use_dynamic_damping:
             from metamon.rl.dynamic_damping import DynamicDampingConfig
+            print(f"[DEBUG] Creating DynamicDampingConfig...", flush=True)
             self.dd_config = DynamicDampingConfig(
                 enabled=True,
                 kl_coef_init=kl_coef_init,
@@ -667,14 +672,44 @@ class MetamonAMAGOExperiment(amago.Experiment):
                 min_lr=min_lr,
                 max_lr=max_lr,
             )
+            print(f"[DEBUG] dd_config created: {self.dd_config}", flush=True)
+            # Note: dd_state will be initialized in start() after policy is created
+        else:
+            print(f"[DEBUG] use_dynamic_damping=False, skipping dd_config creation", flush=True)
+
+    def start(self):
+        """Override start to initialize dynamic damping after policy is created."""
+        print("[DEBUG] start() called", flush=True)
+        super().start()
+        print("[DEBUG] super().start() completed", flush=True)
+
+        # Initialize dynamic damping state now that policy exists
+        if self.dd_config is not None and self.dd_config.enabled:
+            from metamon.rl.dynamic_damping import DynamicDampingState
+            print("[DEBUG] Initializing DynamicDampingState...", flush=True)
+            self.dd_state = DynamicDampingState(
+                base_model=self.policy,
+                config=self.dd_config,
+            )
+            print(f"[Dynamic Damping] Initialized with kl_coef={self.dd_state.kl_coef:.4f}, "
+                  f"ent_coef={self.dd_state.ent_coef:.4f}", flush=True)
 
     def init_policy(self):
         """Initialize policy and optionally enable dynamic damping."""
+        print("[DEBUG] init_policy() CALLED", flush=True)
         out = super().init_policy()
+        print("[DEBUG] super().init_policy() COMPLETED", flush=True)
+
+        # Debug: Check if dynamic damping is configured
+        print(f"[DEBUG] dd_config is None: {self.dd_config is None}", flush=True)
+        if self.dd_config is not None:
+            print(f"[DEBUG] dd_config.enabled: {self.dd_config.enabled}", flush=True)
 
         # Initialize dynamic damping if configured
         if self.dd_config is not None and self.dd_config.enabled:
             self._init_dynamic_damping()
+        else:
+            print("[WARNING] Dynamic damping NOT initialized - check gin config!", flush=True)
 
         return out
 
@@ -689,6 +724,21 @@ class MetamonAMAGOExperiment(amago.Experiment):
         )
         print(f"[Dynamic Damping] Initialized with kl_coef={self.dd_state.kl_coef:.4f}, "
               f"ent_coef={self.dd_state.ent_coef:.4f}")
+
+    def update_reference_policy(self):
+        """Update the reference policy to match current policy weights.
+
+        Call this after loading a checkpoint to ensure the reference policy
+        is a snapshot of the loaded weights, not the random initialization.
+        """
+        if self.dd_state is not None:
+            import copy
+            print("[Dynamic Damping] Updating reference policy to match loaded checkpoint...")
+            self.dd_state.ref_model = copy.deepcopy(self.policy)
+            self.dd_state.ref_model.eval()
+            for param in self.dd_state.ref_model.parameters():
+                param.requires_grad_(False)
+            print("[Dynamic Damping] Reference policy updated successfully")
 
     def enable_dynamic_damping(self, config=None):
         """Manually enable dynamic damping after initialization.
@@ -725,9 +775,19 @@ class MetamonAMAGOExperiment(amago.Experiment):
             # Add KL metrics to loss dict for logging
             loss_dict.update(kl_metrics)
 
+            # Debug: Print metrics being logged
+            if log_step:
+                print(f"[DEBUG] Damping metrics: KL={kl_metrics.get('KL Divergence', 'N/A'):.4f}, "
+                      f"Entropy={kl_metrics.get('Policy Entropy', 'N/A'):.4f}, "
+                      f"Keys in loss_dict: {list(kl_metrics.keys())}")
+
             # Track KL for adaptive control
             if "KL Divergence" in kl_metrics:
                 self.epoch_kl_values.append(kl_metrics["KL Divergence"])
+        else:
+            if log_step:
+                print(f"[DEBUG] Damping NOT enabled: dd_state={self.dd_state is not None}, "
+                      f"config.enabled={self.dd_config.enabled if self.dd_config else 'N/A'}")
 
         return loss_dict
 
@@ -741,26 +801,22 @@ class MetamonAMAGOExperiment(amago.Experiment):
         from metamon.rl.dynamic_damping import compute_masked_reverse_kl, compute_policy_entropy
         from einops import repeat
 
-        # Get current policy logits by doing a forward pass through the actor
-        # We need to replicate some of the agent's forward logic to get raw logits
+        # Encode observations using the tstep encoder (shared for both new and ref)
+        tstep_emb = self.policy.tstep_encoder(
+            obs=batch.obs,
+            rl2s=batch.rl2s,
+            log_dict=None,
+        )
 
-        # Encode observations
-        with torch.no_grad():
-            # Get timestep and trajectory embeddings (shared between new and ref)
-            tstep_emb = self.policy.tstep_encoder(
-                obs=batch.obs,
-                rl2s=batch.rl2s,
-                log_dict=None,
-            )
-            traj_emb = self.policy.traj_encoder(
-                tstep_emb=tstep_emb,
-                time_idxs=batch.time_idxs,
-                padding=(batch.rl2s == self.policy.pad_val).all(-1, keepdim=True),
-                log_dict=None,
-            )
+        # Get trajectory embeddings from NEW policy's traj encoder
+        traj_emb, _ = self.policy.traj_encoder(
+            seq=tstep_emb,  # <-- Correct param name!
+            time_idxs=batch.time_idxs,
+            log_dict=None,
+        )
 
-        # Get state representation (detach to avoid affecting gradient flow through encoders)
-        state = traj_emb.detach()
+        # Get state representation
+        state = traj_emb
 
         # Get observations to pass directly to actor (for illegal action masking)
         straight_from_obs = {
@@ -773,23 +829,25 @@ class MetamonAMAGOExperiment(amago.Experiment):
             state=state,
             log_dict=None,
             straight_from_obs=straight_from_obs,
-        )  # [B, L, G, A]
+        )  # [B, L, G, A] - includes initial timestep at index 0
 
         # Get REFERENCE policy logits (no gradients)
         with torch.no_grad():
             ref_dist_params = self.dd_state.ref_model.actor.actor_network_forward(
-                state=state,
+                state=state,  # Reuse same state encoding
                 log_dict=None,
                 straight_from_obs=straight_from_obs,
-            )  # [B, L, G, A]
+            )  # [B, L, G, A] - includes initial timestep at index 0
 
-        # Extract logits and legal mask
-        # dist_params are already masked by MetamonMaskedActor, but we need the raw logits
-        # before masking for KL computation. However, the masking is done in-place, so we
-        # actually want to use the masked logits since both policies mask identically.
+        # Slice to exclude first timestep (no action at initial state)
+        # This aligns with how AMAGO handles actor loss (actions start at timestep 1)
+        new_dist_params = new_dist_params[:, 1:, :, :]  # [B, L-1, G, A]
+        ref_dist_params = ref_dist_params[:, 1:, :, :]  # [B, L-1, G, A]
 
-        B, L, G, A = new_dist_params.shape
-        legal_mask = ~batch.obs["illegal_actions"][:, 1:, :]  # [B, L, A] (skip first timestep)
+        B, L, G, A = new_dist_params.shape  # Note: L is now L-1 (action-aligned length)
+
+        # Get legal action mask (inverse of illegal_actions), also sliced to match
+        legal_mask = ~straight_from_obs["illegal_actions"][:, 1:, :]  # [B, L, A]
         legal_mask = repeat(legal_mask, "b l a -> b l g a", g=G)  # [B, L, G, A]
 
         # Compute KL divergence per timestep
@@ -808,6 +866,7 @@ class MetamonAMAGOExperiment(amago.Experiment):
 
         # Apply the same masking as actor loss (reuse edit_actor_mask)
         state_mask = (~((batch.rl2s == self.policy.pad_val).all(-1, keepdim=True))).bool()
+        # Slice to match action-aligned length (same as base AMAGO)
         actor_state_mask = repeat(state_mask[:, 1:, ...], f"b l 1 -> b l {G} 1")
         actor_state_mask = self.edit_actor_mask(batch, kl_per_timestep, actor_state_mask)
 
@@ -818,19 +877,15 @@ class MetamonAMAGOExperiment(amago.Experiment):
         # Weighted KL loss
         kl_loss = self.dd_state.kl_coef * masked_kl
 
-        # Metrics for logging
+        # Metrics for logging (always log all damping metrics)
         metrics = {
             "KL Divergence": masked_kl.item(),
             "Policy Entropy": masked_entropy.item(),
+            "Damping/KL Coefficient": self.dd_state.kl_coef,
+            "Damping/Entropy Coefficient": self.dd_state.ent_coef,
+            "Damping/Step": self.dd_state.step,
+            "Damping/Learning Rate": self.dd_state.current_lr if self.dd_state.current_lr is not None else self.optimizer.param_groups[0]["lr"],
         }
-
-        if log_step:
-            # Add additional damping metrics when logging
-            metrics.update({
-                "Damping/KL Coefficient": self.dd_state.kl_coef,
-                "Damping/Entropy Coefficient": self.dd_state.ent_coef,
-                "Damping/Step": self.dd_state.step,
-            })
 
         return kl_loss, metrics
 

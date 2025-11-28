@@ -131,6 +131,16 @@ class TeamParser:
                 if current_pokemon:
                     current_pokemon['ability'] = line.split(':', 1)[1].strip()
 
+            # Check if this is EVs line
+            elif line.startswith('EVs:'):
+                if current_pokemon:
+                    current_pokemon['evs'] = line.split(':', 1)[1].strip()
+
+            # Check if this is IVs line
+            elif line.startswith('IVs:'):
+                if current_pokemon:
+                    current_pokemon['ivs'] = line.split(':', 1)[1].strip()
+
             # Otherwise, it's likely a pokemon name
             else:
                 # Save previous pokemon if exists
@@ -200,6 +210,69 @@ class TeamManager:
         self.duplicate_count = len(self.all_teams) - len(self.unique_teams)
 
         return f"Removed {self.duplicate_count} duplicates. {len(self.unique_teams)} unique teams remain."
+
+    def validate_teams(self, expected_pokemon: int = 6, expected_moves: int = 4) -> Tuple[List[Team], List[Team], str]:
+        """Validate teams have correct number of Pokemon and moves
+
+        Returns:
+            (valid_teams, invalid_teams, report_string)
+        """
+        if not self.unique_teams:
+            return [], [], "No teams to validate. Please load and deduplicate teams first."
+
+        valid_teams = []
+        invalid_teams = []
+
+        for team in self.unique_teams:
+            # Check team size
+            if len(team.pokemon) != expected_pokemon:
+                invalid_teams.append(team)
+                continue
+
+            # Check each Pokemon has correct number of moves
+            invalid_pokemon = []
+            for pokemon in team.pokemon:
+                move_count = len(pokemon.get('moves', []))
+                if move_count != expected_moves:
+                    invalid_pokemon.append(f"{pokemon['name']} ({move_count} moves)")
+
+            if invalid_pokemon:
+                # Store validation details
+                team._validation_error = f"Invalid moves: {', '.join(invalid_pokemon)}"
+                invalid_teams.append(team)
+            else:
+                valid_teams.append(team)
+
+        report = f"## Validation Results\n\n"
+        report += f"✅ **Valid teams:** {len(valid_teams)} ({expected_pokemon} Pokémon, {expected_moves} moves each)\n"
+        report += f"❌ **Invalid teams:** {len(invalid_teams)}\n\n"
+
+        if invalid_teams:
+            report += "### Invalid Teams:\n"
+            for team in invalid_teams[:10]:  # Show first 10
+                error = getattr(team, '_validation_error', None)
+                if error:
+                    report += f"- **{team.name}** ({team.source_file}): {error}\n"
+                else:
+                    report += f"- **{team.name}** ({team.source_file}): {len(team.pokemon)} Pokémon (expected {expected_pokemon})\n"
+
+            if len(invalid_teams) > 10:
+                report += f"- ... and {len(invalid_teams) - 10} more\n"
+
+        return valid_teams, invalid_teams, report
+
+    def apply_validation(self, expected_pokemon: int = 6, expected_moves: int = 4) -> str:
+        """Validate and filter teams to only keep valid ones"""
+        valid_teams, invalid_teams, report = self.validate_teams(expected_pokemon, expected_moves)
+
+        if invalid_teams:
+            self.unique_teams = valid_teams
+            report += f"\n\n✂️ **Removed {len(invalid_teams)} invalid teams.**\n"
+            report += f"**{len(self.unique_teams)} valid teams ready for export.**"
+        else:
+            report += f"\n\n🎉 **All teams are valid!**"
+
+        return report
 
     def get_teams_summary(self) -> List[List]:
         """Get summary of all unique teams for display"""
@@ -285,6 +358,25 @@ class TeamManager:
         """Export teams to metamon_cache/teams structure for use in battles"""
         if not self.unique_teams:
             return "No unique teams to export"
+
+        # Validate teams before export
+        valid_teams, invalid_teams, _ = self.validate_teams(expected_pokemon=6, expected_moves=4)
+
+        if invalid_teams:
+            error_list = []
+            for t in invalid_teams[:5]:
+                error = getattr(t, '_validation_error', None)
+                if error:
+                    error_list.append(f"- {t.name} ({t.source_file}): {error}")
+                else:
+                    error_list.append(f"- {t.name} ({t.source_file}): {len(t.pokemon)} Pokémon")
+
+            return f"""❌ **Cannot export! Found {len(invalid_teams)} invalid teams.**
+
+{chr(10).join(error_list)}
+{f"- ... and {len(invalid_teams) - 5} more" if len(invalid_teams) > 5 else ""}
+
+**Please click "Validate & Filter Teams" first to remove invalid teams.**"""
 
         try:
             # Get cache directory
@@ -386,6 +478,25 @@ def create_dashboard():
 
         dedup_status = gr.Markdown()
 
+        with gr.Row():
+            expected_pokemon_input = gr.Number(
+                label="Expected Pokémon per Team",
+                value=6,
+                precision=0,
+                minimum=1,
+                maximum=6
+            )
+            expected_moves_input = gr.Number(
+                label="Expected Moves per Pokémon",
+                value=4,
+                precision=0,
+                minimum=1,
+                maximum=4
+            )
+            validate_btn = gr.Button("✅ Validate & Filter Teams", variant="secondary")
+
+        validation_status = gr.Markdown()
+
         with gr.Tabs():
             with gr.Tab("📊 Team List"):
                 refresh_table_btn = gr.Button("🔄 Refresh Table")
@@ -457,6 +568,9 @@ def create_dashboard():
         def remove_duplicates_handler():
             return manager.remove_duplicates()
 
+        def validate_teams_handler(expected_pokemon, expected_moves):
+            return manager.apply_validation(int(expected_pokemon), int(expected_moves))
+
         def refresh_table_handler():
             return manager.get_teams_summary()
 
@@ -485,6 +599,12 @@ def create_dashboard():
         remove_dupes_btn.click(
             fn=remove_duplicates_handler,
             outputs=[dedup_status]
+        )
+
+        validate_btn.click(
+            fn=validate_teams_handler,
+            inputs=[expected_pokemon_input, expected_moves_input],
+            outputs=[validation_status]
         )
 
         refresh_table_btn.click(
