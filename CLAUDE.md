@@ -12,6 +12,8 @@ The work is published as "Human-Level Competitive Pokémon via Scalable Offline 
 
 ## Environment Setup
 
+This project uses **`uv`** for package management.
+
 Before running any commands, activate the virtual environment and set the cache directory:
 
 ```bash
@@ -138,6 +140,52 @@ python -m metamon.nash.run_psro \
 - **`LESSONS_LEARNED.md`**: Key findings from Phase 0 experiments
 - **`metamon/nash/README.md`**: Package technical documentation
 - **`metamon/nash/claude.md`**: Implementation details and status
+
+---
+---
+
+## Self-Play Training Infrastructure
+
+### Existing Production Scripts (DON'T REIMPLEMENT)
+
+Located in `scripts/`:
+- **`generate_selfplay_data.py`** - Parallel self-play data collection (model vs itself)
+- **`filter_selfplay_data.py`** - Quality filtering (invalid actions, win/loss balance)
+- **`self_play_tournament.py`** - Round-robin evaluation for checkpoint comparison
+- **`calculate_elo.py`** - ELO rating calculation
+
+**Workflow**: Generate → Filter → Train (via `metamon.rl.finetune_from_hf`) → Evaluate → Repeat
+
+See `scripts/README.md` for usage details.
+
+### Dynamic Damping (NEW)
+
+**Location**: `metamon/rl/dynamic_damping.py`
+
+**What**: Prevents policy collapse in self-play via:
+- Reverse-KL regularization: KL(π_new || π_ref)
+- Power-law coefficient schedules (smooth decay)
+- Adaptive LR/KL control based on observed KL
+
+**Integration**: Works with existing training via gin config
+
+**Enable**: Use `vanilla_selfplay_damped.gin` instead of `vanilla_selfplay_baseline.gin`
+
+**Docs**: See `GEN1OU_SELFPLAY_GUIDE.md` for complete Gen1 OU workflow
+
+### Critical: Format Filtering
+
+**ALWAYS use `--formats gen1ou`** in training to prevent loading other formats:
+```bash
+python -m metamon.rl.finetune_from_hf --formats gen1ou ...
+```
+
+Data must be in format-specific subdirectories: `data_dir/gen1ou/*.json.lz4`
+
+### Existing Gen1 OU Data
+
+- Location: `/home/eddie/nash_phase0/trajectories/gen1ou/`
+- Size: 1,104 replays (ready to use)
 
 ---
 
