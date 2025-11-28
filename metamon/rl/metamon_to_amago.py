@@ -609,7 +609,260 @@ class MetamonAMAGODataset(RLDataset):
 class MetamonAMAGOExperiment(amago.Experiment):
     """
     Adds actions masking to the main AMAGO experiment, and leaves room for further tweaks.
+
+    Also supports dynamic damping for stable self-play training with:
+    - Reverse-KL regularization to a reference policy
+    - Power-law schedules for entropy and KL coefficients
+    - Adaptive learning rate and KL coefficient control
     """
+
+    def __init__(
+        self,
+        *args,
+        # Dynamic damping parameters (gin-configurable)
+        use_dynamic_damping: bool = False,
+        kl_coef_init: float = 0.05,
+        kl_coef_max: float = 0.5,
+        kl_power_alpha: float = 0.5,
+        kl_schedule_steps: int = 1_000_000,
+        ent_coef_init: float = 0.01,
+        ent_coef_min: float = 0.001,
+        ent_power_alpha: float = 0.7,
+        ent_schedule_steps: int = 1_000_000,
+        target_kl_per_step: float = 0.01,
+        kl_tolerance: float = 1.5,
+        lr_shrink_factor: float = 0.5,
+        lr_grow_factor: float = 1.1,
+        kl_coef_growth_factor: float = 1.5,
+        kl_coef_decay_factor: float = 0.9,
+        min_lr: float = 1e-6,
+        max_lr: float = 1e-3,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+
+        # Dynamic damping state
+        self.dd_state = None
+        self.dd_config = None
+        self.epoch_kl_values = []  # Accumulate KL values over epoch for adaptive control
+
+        if use_dynamic_damping:
+            from metamon.rl.dynamic_damping import DynamicDampingConfig
+            self.dd_config = DynamicDampingConfig(
+                enabled=True,
+                kl_coef_init=kl_coef_init,
+                kl_coef_max=kl_coef_max,
+                kl_power_alpha=kl_power_alpha,
+                kl_schedule_steps=kl_schedule_steps,
+                ent_coef_init=ent_coef_init,
+                ent_coef_min=ent_coef_min,
+                ent_power_alpha=ent_power_alpha,
+                ent_schedule_steps=ent_schedule_steps,
+                target_kl_per_step=target_kl_per_step,
+                kl_tolerance=kl_tolerance,
+                lr_shrink_factor=lr_shrink_factor,
+                lr_grow_factor=lr_grow_factor,
+                kl_coef_growth_factor=kl_coef_growth_factor,
+                kl_coef_decay_factor=kl_coef_decay_factor,
+                min_lr=min_lr,
+                max_lr=max_lr,
+            )
+
+    def init_policy(self):
+        """Initialize policy and optionally enable dynamic damping."""
+        out = super().init_policy()
+
+        # Initialize dynamic damping if configured
+        if self.dd_config is not None and self.dd_config.enabled:
+            self._init_dynamic_damping()
+
+        return out
+
+    def _init_dynamic_damping(self):
+        """Initialize dynamic damping with a frozen reference policy snapshot."""
+        from metamon.rl.dynamic_damping import DynamicDampingState
+
+        # Create frozen reference from current policy
+        self.dd_state = DynamicDampingState(
+            base_model=self.policy,  # The full agent
+            config=self.dd_config,
+        )
+        print(f"[Dynamic Damping] Initialized with kl_coef={self.dd_state.kl_coef:.4f}, "
+              f"ent_coef={self.dd_state.ent_coef:.4f}")
+
+    def enable_dynamic_damping(self, config=None):
+        """Manually enable dynamic damping after initialization.
+
+        Useful for programmatically enabling damping outside of gin configs.
+
+        Args:
+            config: Optional DynamicDampingConfig. If None, uses default config.
+        """
+        from metamon.rl.dynamic_damping import DynamicDampingConfig, DynamicDampingState
+
+        if config is None:
+            config = DynamicDampingConfig()
+
+        self.dd_config = config
+        self.dd_state = DynamicDampingState(
+            base_model=self.policy,
+            config=config,
+        )
+        print(f"[Dynamic Damping] Enabled with kl_coef={self.dd_state.kl_coef:.4f}")
+
+    def compute_loss(self, batch: Batch, log_step: bool) -> dict:
+        """Compute RL loss with optional dynamic damping (KL regularization)."""
+        # Call parent to get standard actor/critic losses
+        loss_dict = super().compute_loss(batch, log_step)
+
+        # Add KL regularization if dynamic damping is enabled
+        if self.dd_state is not None and self.dd_config.enabled:
+            kl_loss, kl_metrics = self._compute_kl_loss(batch, log_step)
+
+            # Add KL loss to actor loss
+            loss_dict["Actor Loss"] = loss_dict["Actor Loss"] + kl_loss
+
+            # Add KL metrics to loss dict for logging
+            loss_dict.update(kl_metrics)
+
+            # Track KL for adaptive control
+            if "KL Divergence" in kl_metrics:
+                self.epoch_kl_values.append(kl_metrics["KL Divergence"])
+
+        return loss_dict
+
+    def _compute_kl_loss(self, batch: Batch, log_step: bool) -> tuple[torch.Tensor, dict]:
+        """Compute reverse-KL regularization loss: KL(π_new || π_ref).
+
+        Returns:
+            kl_loss: Scalar KL loss weighted by kl_coef
+            metrics: Dict of metrics for logging
+        """
+        from metamon.rl.dynamic_damping import compute_masked_reverse_kl, compute_policy_entropy
+        from einops import repeat
+
+        # Get current policy logits by doing a forward pass through the actor
+        # We need to replicate some of the agent's forward logic to get raw logits
+
+        # Encode observations
+        with torch.no_grad():
+            # Get timestep and trajectory embeddings (shared between new and ref)
+            tstep_emb = self.policy.tstep_encoder(
+                obs=batch.obs,
+                rl2s=batch.rl2s,
+                log_dict=None,
+            )
+            traj_emb = self.policy.traj_encoder(
+                tstep_emb=tstep_emb,
+                time_idxs=batch.time_idxs,
+                padding=(batch.rl2s == self.policy.pad_val).all(-1, keepdim=True),
+                log_dict=None,
+            )
+
+        # Get state representation (detach to avoid affecting gradient flow through encoders)
+        state = traj_emb.detach()
+
+        # Get observations to pass directly to actor (for illegal action masking)
+        straight_from_obs = {
+            k: batch.obs[k] for k in self.policy.pass_obs_keys_to_actor
+        }
+        straight_from_obs["illegal_actions"] = batch.obs.get("illegal_actions")
+
+        # Get NEW policy logits (with gradients)
+        new_dist_params = self.policy.actor.actor_network_forward(
+            state=state,
+            log_dict=None,
+            straight_from_obs=straight_from_obs,
+        )  # [B, L, G, A]
+
+        # Get REFERENCE policy logits (no gradients)
+        with torch.no_grad():
+            ref_dist_params = self.dd_state.ref_model.actor.actor_network_forward(
+                state=state,
+                log_dict=None,
+                straight_from_obs=straight_from_obs,
+            )  # [B, L, G, A]
+
+        # Extract logits and legal mask
+        # dist_params are already masked by MetamonMaskedActor, but we need the raw logits
+        # before masking for KL computation. However, the masking is done in-place, so we
+        # actually want to use the masked logits since both policies mask identically.
+
+        B, L, G, A = new_dist_params.shape
+        legal_mask = ~batch.obs["illegal_actions"][:, 1:, :]  # [B, L, A] (skip first timestep)
+        legal_mask = repeat(legal_mask, "b l a -> b l g a", g=G)  # [B, L, G, A]
+
+        # Compute KL divergence per timestep
+        kl_per_timestep = compute_masked_reverse_kl(
+            new_logits=new_dist_params.reshape(B * L * G, A),
+            ref_logits=ref_dist_params.reshape(B * L * G, A),
+            legal_mask=legal_mask.reshape(B * L * G, A),
+        )  # [B*L*G]
+        kl_per_timestep = kl_per_timestep.reshape(B, L, G, 1)  # [B, L, G, 1]
+
+        # Compute policy entropy (for logging)
+        entropy_per_timestep = compute_policy_entropy(
+            logits=new_dist_params.reshape(B * L * G, A),
+            legal_mask=legal_mask.reshape(B * L * G, A),
+        ).reshape(B, L, G, 1)
+
+        # Apply the same masking as actor loss (reuse edit_actor_mask)
+        state_mask = (~((batch.rl2s == self.policy.pad_val).all(-1, keepdim=True))).bool()
+        actor_state_mask = repeat(state_mask[:, 1:, ...], f"b l 1 -> b l {G} 1")
+        actor_state_mask = self.edit_actor_mask(batch, kl_per_timestep, actor_state_mask)
+
+        # Compute masked averages
+        masked_kl = amago.utils.masked_avg(kl_per_timestep, actor_state_mask)
+        masked_entropy = amago.utils.masked_avg(entropy_per_timestep, actor_state_mask)
+
+        # Weighted KL loss
+        kl_loss = self.dd_state.kl_coef * masked_kl
+
+        # Metrics for logging
+        metrics = {
+            "KL Divergence": masked_kl.item(),
+            "Policy Entropy": masked_entropy.item(),
+        }
+
+        if log_step:
+            # Add additional damping metrics when logging
+            metrics.update({
+                "Damping/KL Coefficient": self.dd_state.kl_coef,
+                "Damping/Entropy Coefficient": self.dd_state.ent_coef,
+                "Damping/Step": self.dd_state.step,
+            })
+
+        return kl_loss, metrics
+
+    def train_step(self, batch: Batch, log_step: bool):
+        """Training step with dynamic damping schedule updates and adaptive control."""
+        # Update damping schedules before training step
+        if self.dd_state is not None and self.dd_config.enabled:
+            self.dd_state.update_schedules()
+
+        # Perform standard training step
+        metrics = super().train_step(batch, log_step)
+
+        return metrics
+
+    def train_epoch(self, epoch: int):
+        """Training epoch with adaptive LR/KL control at epoch boundaries."""
+        # Reset epoch KL tracking
+        self.epoch_kl_values = []
+
+        # Run standard training epoch
+        out = super().train_epoch(epoch)
+
+        # Adapt LR and KL coefficient based on observed KL divergence
+        if self.dd_state is not None and self.dd_config.enabled and self.epoch_kl_values:
+            mean_kl = float(np.mean(self.epoch_kl_values))
+            self.dd_state.adapt_from_observed_kl(self.optimizer, mean_kl)
+
+            print(f"[Dynamic Damping] Epoch {epoch}: mean_kl={mean_kl:.4f}, "
+                  f"kl_coef={self.dd_state.kl_coef:.4f}, "
+                  f"lr={self.optimizer.param_groups[0]['lr']:.6f}")
+
+        return out
 
     def init_envs(self):
         out = super().init_envs()
