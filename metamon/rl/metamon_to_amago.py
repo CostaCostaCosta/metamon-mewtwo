@@ -452,7 +452,7 @@ class MetamonTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
     def emb_dim(self):
         return self.turn_embedding.output_dim
 
-    @torch.compile
+    # @torch.compile  # Disabled: causes stride assertion errors when fine-tuning with different reward functions
     def inner_forward(self, obs, rl2s, log_dict=None):
         if self.training and self.token_mask_aug:
             obs["text_tokens"] = unknown_token_mask(obs["text_tokens"])
@@ -510,7 +510,7 @@ class MetamonPerceiverTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
     def emb_dim(self):
         return self.turn_embedding.output_dim
 
-    @torch.compile
+    # @torch.compile  # Disabled: causes stride assertion errors when fine-tuning with different reward functions
     def inner_forward(self, obs, rl2s, log_dict=None):
         if self.training and self.token_mask_aug:
             obs["text_tokens"] = unknown_token_mask(obs["text_tokens"])

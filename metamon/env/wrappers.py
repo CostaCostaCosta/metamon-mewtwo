@@ -488,7 +488,8 @@ class QueueOnLocalLadder(PokeEnvWrapper):
     """
 
     # increases time to launch opponent envs before ladder loop times out ("Agent is not challenging")
-    _INIT_RETRIES = 1000
+    # With sequential execution and 30s sleep, this gives ~167 seconds (1000 * 0.167s default retry time)
+    _INIT_RETRIES = 2000
 
     def __init__(
         self,

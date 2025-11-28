@@ -22,6 +22,7 @@ from metamon.rl.metamon_to_amago import (
     make_baseline_env,
     make_placeholder_env,
 )
+from metamon.rl.pretrained import get_pretrained_model
 from metamon import baselines
 
 
@@ -71,6 +72,12 @@ def add_cli(parser):
         type=int,
         default=None,
         help="Resume training from an existing run with this run_name. Provide the epoch checkpoint to load.",
+    )
+    parser.add_argument(
+        "--init_from_checkpoint",
+        type=str,
+        default=None,
+        help="Initialize from a pretrained checkpoint (e.g., 'SyntheticRLV2'). Use this to fine-tune from a pretrained model.",
     )
     parser.add_argument(
         "--epochs",
@@ -361,8 +368,20 @@ if __name__ == "__main__":
         wandb_entity=WANDB_ENTITY,
     )
     experiment.start()
+
+    # Load pretrained checkpoint if specified
+    if args.init_from_checkpoint is not None and args.init_from_checkpoint.strip():
+        print(f"\nInitializing from pretrained checkpoint: {args.init_from_checkpoint}")
+        pretrained_model = get_pretrained_model(args.init_from_checkpoint)
+        # Get the checkpoint path from the pretrained model
+        ckpt_path = pretrained_model.get_path_to_checkpoint(pretrained_model.default_checkpoint)
+        print(f"  Loading weights from: {ckpt_path}")
+        experiment.load_checkpoint_from_path(ckpt_path, is_accelerate_state=False)
+        print(f"  ✓ Successfully initialized from {args.init_from_checkpoint}")
+
     if args.ckpt is not None:
         # resume training from a checkpoint
         experiment.load_checkpoint(args.ckpt)
+
     experiment.learn()
     wandb.finish()

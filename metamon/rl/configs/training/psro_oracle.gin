@@ -1,0 +1,67 @@
+# PSRO Oracle Training Configuration
+#
+# This config is optimized for training best-response (BR) policies in PSRO:
+# 1. Lower learning rate for fine-tuning from strong base policy
+# 2. Settings appropriate for online + offline RL mix
+# 3. Faster learning with higher reward multiplier
+# 4. Shorter training (2-4 epochs per PSRO iteration)
+#
+# Key differences from standard offline RL:
+# - Lower LR (3e-5 vs 1.5e-4): We're fine-tuning, not training from scratch
+# - Online coeff > 0: Enable learning from self-play trajectories
+# - Smaller batch size: Faster iteration during short training runs
+
+import amago.agent
+
+# Reward scaling (keep same as offline RL)
+agent.Agent.reward_multiplier = 10.
+agent.MultiTaskAgent.reward_multiplier = 10.
+
+# Target network update rate (keep same)
+agent.Agent.tau = .004
+agent.MultiTaskAgent.tau = .004
+
+# Value function updates (keep same)
+agent.Agent.num_actions_for_value_in_critic_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_critic_loss = 3
+
+agent.Agent.num_actions_for_value_in_actor_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_actor_loss = 3
+
+# Online/Offline mixing
+# For PSRO, we mix online self-play with offline replays
+# Start with 50/50 mix, can adjust based on results
+agent.Agent.online_coeff = 0.5  # 50% online self-play
+agent.MultiTaskAgent.online_coeff = 0.5
+agent.Agent.offline_coeff = 0.5  # 50% offline replays
+agent.MultiTaskAgent.offline_coeff = 0.5
+
+# Use binary reward filter (same as offline RL)
+agent.Agent.fbc_filter_func = @agent.binary_filter
+agent.MultiTaskAgent.fbc_filter_func = @agent.binary_filter
+
+# PSRO-specific training hyperparameters
+# Lower learning rate for fine-tuning from strong base checkpoint
+MetamonAMAGOExperiment.learning_rate = 3e-5  # 5x lower than offline RL
+
+# Regularization (slightly reduced for faster learning in short runs)
+MetamonAMAGOExperiment.l2_coeff = 5e-5  # Half of offline RL
+
+# Gradient clipping (keep same)
+MetamonAMAGOExperiment.grad_clip = 1.5
+
+# Critic loss weight (keep same)
+MetamonAMAGOExperiment.critic_loss_weight = 10.
+
+# Warmup (shorter for fine-tuning)
+MetamonAMAGOExperiment.lr_warmup_steps = 500  # Half of offline RL
+
+# Note: For Phase 1, we're using a simplified PSRO where BR policies
+# are trained for only 2-4 epochs. This is intentional - each PSRO iteration
+# should be fast, and we'll iterate multiple times. The goal is to quickly
+# explore the policy space, not to fully converge each BR.
+#
+# For Phase 2+, we may want to:
+# - Increase epochs per iteration (5-10)
+# - Add curriculum learning (start with high offline coeff, decay to high online coeff)
+# - Add population-based learning rate scheduling
