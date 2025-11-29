@@ -704,9 +704,12 @@ class MetamonAMAGOExperiment(amago.Experiment):
         print("[DEBUG] super().__init__() completed, policy exists:", hasattr(self, 'policy'), flush=True)
 
         # Dynamic damping state
+        from collections import deque
         self.dd_state = None
         self.dd_config = None
-        self.epoch_kl_values = []  # Accumulate KL values over epoch for adaptive control
+        self.dd_adapt_interval = 100  # Adapt controller every N steps
+        self.kl_window = deque(maxlen=self.dd_adapt_interval)  # Sliding window of last N KL values
+        self.dd_step_counter = 0  # Track steps for periodic adaptation
 
         if use_dynamic_damping:
             from metamon.rl.dynamic_damping import DynamicDampingConfig
@@ -839,9 +842,29 @@ class MetamonAMAGOExperiment(amago.Experiment):
                       f"Entropy={kl_metrics.get('Policy Entropy', 'N/A'):.4f}, "
                       f"Keys in loss_dict: {list(kl_metrics.keys())}")
 
-            # Track KL for adaptive control
+            # Track KL for adaptive control (sliding window of last N steps)
             if "KL Divergence" in kl_metrics:
-                self.epoch_kl_values.append(kl_metrics["KL Divergence"])
+                self.kl_window.append(kl_metrics["KL Divergence"])
+                self.dd_step_counter += 1
+
+                # Debug: Print counter every 10 steps
+                if self.dd_step_counter % 10 == 0:
+                    print(f"[DEBUG] dd_step_counter={self.dd_step_counter}, "
+                          f"kl_window_len={len(self.kl_window)}, "
+                          f"recent_kl={kl_metrics['KL Divergence']:.4f}", flush=True)
+
+                # Adapt controller every N steps based on LOCAL KL window (not entire epoch)
+                if self.dd_step_counter >= self.dd_adapt_interval and len(self.kl_window) >= 10:
+                    mean_kl = float(np.mean(self.kl_window))
+                    self.dd_state.adapt_from_observed_kl(self.optimizer, mean_kl)
+
+                    # ALWAYS print adaptation (not just on log_step)
+                    print(f"[Dynamic Damping] Adapted at step {self.dd_step_counter}: "
+                          f"mean_kl={mean_kl:.4f}, kl_coef={self.dd_state.kl_coef:.4f}, "
+                          f"lr={self.optimizer.param_groups[0]['lr']:.6f}", flush=True)
+
+                    # Reset step counter, keep window rolling (deque auto-manages size)
+                    self.dd_step_counter = 0
         else:
             if log_step:
                 print(f"[DEBUG] Damping NOT enabled: dd_state={self.dd_state is not None}, "
@@ -991,21 +1014,27 @@ class MetamonAMAGOExperiment(amago.Experiment):
         return metrics
 
     def train_epoch(self, epoch: int):
-        """Training epoch with adaptive LR/KL control at epoch boundaries."""
-        # Reset epoch KL tracking
-        self.epoch_kl_values = []
+        """Training epoch with adaptive LR/KL control during training (every N steps)."""
+        # Reset step counter at start of epoch (window keeps rolling)
+        self.dd_step_counter = 0
 
-        # Run standard training epoch
+        # Run standard training epoch (adaptive control happens every N steps during training)
         out = super().train_epoch(epoch)
 
-        # Adapt LR and KL coefficient based on observed KL divergence
-        if self.dd_state is not None and self.dd_config.enabled and self.epoch_kl_values:
-            mean_kl = float(np.mean(self.epoch_kl_values))
+        # End-of-epoch: adapt if we have accumulated steps since last adaptation
+        # (ensures we don't miss the last partial interval)
+        if self.dd_state is not None and self.dd_config.enabled and \
+           self.dd_step_counter > 0 and len(self.kl_window) >= 10:
+            mean_kl = float(np.mean(self.kl_window))
             self.dd_state.adapt_from_observed_kl(self.optimizer, mean_kl)
 
-            print(f"[Dynamic Damping] Epoch {epoch}: mean_kl={mean_kl:.4f}, "
+            print(f"[Dynamic Damping] End-of-epoch {epoch} adaptation: mean_kl={mean_kl:.4f} "
+                  f"(over last {len(self.kl_window)} steps), "
                   f"kl_coef={self.dd_state.kl_coef:.4f}, "
                   f"lr={self.optimizer.param_groups[0]['lr']:.6f}")
+
+            # Reset for next epoch
+            self.dd_step_counter = 0
 
         return out
 

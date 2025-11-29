@@ -3,25 +3,25 @@ import amago.nets.traj_encoders
 import amago.agent
 import amago.experiment
 
-MetamonAMAGOExperiment.agent_type = @agent.MultiTaskAgent
+MetamonAMAGOExperiment.agent_type = @MetamonMultiTaskAgent
 MetamonAMAGOExperiment.tstep_encoder_type = @MetamonTstepEncoder
 MetamonAMAGOExperiment.traj_encoder_type = @traj_encoders.TformerTrajEncoder
 MetamonAMAGOExperiment.max_seq_len = 128
 
 # actor
-MultiTaskAgent.actor_type = @MetamonMaskedActor
-MultiTaskAgent.pass_obs_keys_to_actor = ["illegal_actions"]
+MetamonMultiTaskAgent.actor_type = @MetamonMaskedActor
+MetamonMultiTaskAgent.pass_obs_keys_to_actor = ["illegal_actions"]
 MetamonMaskedActor.activation = "leaky_relu"
 MetamonMaskedActor.n_layers = 2
 MetamonMaskedActor.d_hidden = 512
 
 # critic
-MultiTaskAgent.critic_type = @actor_critic.NCriticsTwoHot
+MetamonMultiTaskAgent.critic_type = @actor_critic.NCriticsTwoHot
 actor_critic.NCriticsTwoHot.activation = "leaky_relu"
 actor_critic.NCriticsTwoHot.n_layers = 2
 actor_critic.NCriticsTwoHot.d_hidden = 512
-MultiTaskAgent.popart = True
-MultiTaskAgent.num_critics = 6
+MetamonMultiTaskAgent.popart = True
+MetamonMultiTaskAgent.num_critics = 6
 actor_critic.NCriticsTwoHot.output_bins = 96
 actor_critic.NCriticsTwoHot.min_return = -1100
 actor_critic.NCriticsTwoHot.max_return = 1100
