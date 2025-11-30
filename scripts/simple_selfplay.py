@@ -137,7 +137,7 @@ def main():
 
     print(f"Launching {args.num_players} players...")
     for i in range(args.num_players):
-        player_cmd = base_cmd + ["--username", f"SP_{session_id}_P{i+1}"]
+        player_cmd = base_cmd + ["--username", f"SP{session_id}P{i+1}"]
         log_path = output_dir / f"player{i+1}.log"
         log_file = open(log_path, "w")
         log_files.append(log_file)
