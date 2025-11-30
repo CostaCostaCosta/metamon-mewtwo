@@ -178,6 +178,9 @@ if __name__ == "__main__":
         start_checkpoint,
         is_accelerate_state=False,
     )
+    # Update reference policy for dynamic damping (if enabled)
+    if hasattr(experiment, 'update_reference_policy'):
+        experiment.update_reference_policy()
     # finetune!
     experiment.learn()
     wandb.finish()

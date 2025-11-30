@@ -1,0 +1,91 @@
+# Dynamic Damping V1 - Controller-Only Mode
+#
+# This config implements conservative, Ataraxos-inspired dynamic damping.
+# Key differences from previous versions:
+#   - Power-law schedules DISABLED (alpha=0) to let adaptive controller dominate
+#   - Tighter gradient clipping (0.3 vs 1.5)
+#   - Lower base LR (5e-5 vs 1e-4)
+#   - Stronger initial damping (kl_coef_init=0.10 vs 0.05)
+#   - More aggressive controller response (kl_coef_growth_factor=2.0 vs 1.5)
+#
+# Expected behavior after 20-30% of epoch 1:
+#   - KL Divergence: hovering around 0.01-0.03 (not drifting upward)
+#   - Policy Entropy: in range 0.6-1.2 (not collapsing to 0.3-0.4)
+#   - KL Coefficient: oscillating up/down with KL (not monotone decay)
+#   - Learning Rate: visibly shrinking when KL high (not pegged at max)
+#
+# Once v1 is stable, move to v2 by enabling gentle annealing:
+#   MetamonAMAGOExperiment.kl_power_alpha = 0.2
+#   MetamonAMAGOExperiment.ent_power_alpha = 0.3
+
+import amago.agent
+
+# Reward shaping
+agent.Agent.reward_multiplier = 10.
+agent.MultiTaskAgent.reward_multiplier = 10.
+
+# Target network update rate
+agent.Agent.tau = .004
+agent.MultiTaskAgent.tau = .004
+
+# Number of actions sampled for value estimation
+agent.Agent.num_actions_for_value_in_critic_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_critic_loss = 3
+
+agent.Agent.num_actions_for_value_in_actor_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_actor_loss = 3
+
+# Offline RL coefficients for self-play
+# Use balanced mix of online and offline for self-play
+agent.Agent.online_coeff = 0.5
+agent.MultiTaskAgent.online_coeff = 0.5
+agent.Agent.offline_coeff = 0.5
+agent.MultiTaskAgent.offline_coeff = 0.5
+agent.Agent.fbc_filter_func = @agent.binary_filter
+agent.MultiTaskAgent.fbc_filter_func = @agent.binary_filter
+
+# =========================
+# Core optimizer settings
+# =========================
+MetamonAMAGOExperiment.l2_coeff = 5e-5
+MetamonAMAGOExperiment.learning_rate = 5e-5      # Base LR (conservative)
+MetamonAMAGOExperiment.lr_warmup_steps = 500     # Short warmup
+MetamonAMAGOExperiment.max_lr = 1e-4             # Never above Ataraxos max
+MetamonAMAGOExperiment.min_lr = 5e-6             # Matches paper floor
+
+MetamonAMAGOExperiment.grad_clip = 0.3           # Much tighter than 1.5
+
+MetamonAMAGOExperiment.critic_loss_weight = 10.
+
+# =========================
+# Dynamic damping (KL)
+# =========================
+MetamonAMAGOExperiment.use_dynamic_damping = True
+
+# Target KL per policy update ~ Ataraxos 0.005-0.03 range
+# Updated after observing equilibrium around 0.025-0.03 in practice
+MetamonAMAGOExperiment.target_kl_per_step = 0.02
+MetamonAMAGOExperiment.kl_tolerance = 1.5        # Acceptable band [0.013, 0.03]
+
+# Start with strong-ish damping, let controller dominate
+MetamonAMAGOExperiment.kl_coef_init = 0.10       # Roughly their data-policy KL
+MetamonAMAGOExperiment.kl_coef_max = 0.20        # Cap near magnet+data sum
+
+# For v1: NO power-law decay, only adaptive control
+MetamonAMAGOExperiment.kl_power_alpha = 0.0
+MetamonAMAGOExperiment.kl_schedule_steps = 1_000_000  # Unused while alpha=0
+
+# How we react to KL deviations
+MetamonAMAGOExperiment.lr_shrink_factor = 0.5    # Halve LR when KL too high
+MetamonAMAGOExperiment.lr_grow_factor = 1.1      # Grow slowly when KL low
+
+MetamonAMAGOExperiment.kl_coef_growth_factor = 2.0   # Ramp damping fast if KL high
+MetamonAMAGOExperiment.kl_coef_decay_factor = 0.9    # Relax gently if KL low
+
+# =========================
+# Dynamic damping (entropy)
+# =========================
+MetamonAMAGOExperiment.ent_coef_init = 0.02      # Stronger than 0.01 to avoid collapse
+MetamonAMAGOExperiment.ent_coef_min = 0.005      # Don't let exploration vanish
+MetamonAMAGOExperiment.ent_power_alpha = 0.0     # v1: no decay, keep entropy pressure
+MetamonAMAGOExperiment.ent_schedule_steps = 1_000_000

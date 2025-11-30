@@ -177,3 +177,5 @@ checks_data/
 
 # cache
 metamon_cache
+
+teams/**/*.txt

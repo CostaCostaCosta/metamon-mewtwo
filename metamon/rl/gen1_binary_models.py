@@ -48,6 +48,95 @@ class P0_SYN_V2_GEN1(LocalFinetunedModel):
         )
 
 
+###################################
+## Dynamic Damping Self-Play Models
+###################################
+
+
+@pretrained_model("DampedConservative100k_Epoch2")
+class DampedConservative100k_Epoch2(LocalFinetunedModel):
+    """
+    Conservative Damping Self-Play - Epoch 2
+
+    Self-play training with conservative damping parameters on Gen1 OU data.
+    Uses adaptive regularization to prevent policy collapse during self-play.
+
+    Training config:
+    - Base: SyntheticRLV2
+    - Format: Gen1 OU
+    - Training: vanilla_selfplay_damped_conservative.gin
+    - Reward: DefaultShapedReward
+    - Damping: Conservative power-law KL regularization
+    - WandB: damped-conservative-100k (run 0jrll78y)
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=SyntheticRLV2,
+            amago_ckpt_dir="/home/eddie/gen1_selfplay_damped_con_ckpt",
+            model_name="damped-conservative-100k",
+            default_checkpoint=2,
+            train_gin_config="vanilla_selfplay_damped_conservative.gin",
+            reward_function=get_reward_function("DefaultShapedReward"),
+        )
+
+
+@pretrained_model("DampedConservative100k_Epoch3")
+class DampedConservative100k_Epoch3(LocalFinetunedModel):
+    """
+    Conservative Damping Self-Play - Epoch 3 (Latest)
+
+    Self-play training with conservative damping parameters on Gen1 OU data.
+    Uses adaptive regularization to prevent policy collapse during self-play.
+
+    Training config:
+    - Base: SyntheticRLV2
+    - Format: Gen1 OU
+    - Training: vanilla_selfplay_damped_conservative.gin
+    - Reward: DefaultShapedReward
+    - Damping: Conservative power-law KL regularization
+    - WandB: damped-conservative-100k (run 0jrll78y)
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=SyntheticRLV2,
+            amago_ckpt_dir="/home/eddie/gen1_selfplay_damped_con_ckpt",
+            model_name="damped-conservative-100k",
+            default_checkpoint=3,
+            train_gin_config="vanilla_selfplay_damped_conservative.gin",
+            reward_function=get_reward_function("DefaultShapedReward"),
+        )
+
+
+@pretrained_model("DampedConservativeBinaryV2_Epoch2")
+class DampedConservativeBinaryV2_Epoch2(LocalFinetunedModel):
+    """
+    Conservative Damping Binary Reward V2 - Epoch 2
+
+    Finetuned from DampedConservative100k using BinaryReward (sparse +/-100 win/loss).
+    Tests whether the conservative damping policy can adapt to binary rewards while
+    maintaining stability.
+
+    Training config:
+    - Base: DampedConservative100k (finetuned from SyntheticRLV2)
+    - Format: Gen1 OU
+    - Training: vanilla_selfplay_damped_conservative.gin
+    - Reward: BinaryReward (sparse)
+    - Damping: Conservative power-law KL regularization
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=SyntheticRLV2,
+            amago_ckpt_dir="/home/eddie/gen1_selfplay_damped_con_binary_v2_ckpt",
+            model_name="damped-conservative-100k-binary-v2",
+            default_checkpoint=2,
+            train_gin_config="vanilla_selfplay_damped_conservative.gin",
+            reward_function=get_reward_function("BinaryReward"),
+        )
+
+
 ##############################
 ## Gen1 BinaryReward Experiment
 ##############################

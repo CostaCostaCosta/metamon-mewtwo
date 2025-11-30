@@ -1,0 +1,78 @@
+# Vanilla Self-Play Training Config (With Dynamic Damping)
+#
+# This config enables dynamic damping for stable vanilla self-play training.
+# Dynamic damping includes:
+#   - Reverse-KL regularization to reference policy
+#   - Power-law schedules for entropy and KL coefficients
+#   - Adaptive learning rate and KL coefficient control
+
+import amago.agent
+
+# Reward shaping
+agent.Agent.reward_multiplier = 10.
+agent.MultiTaskAgent.reward_multiplier = 10.
+
+# Target network update rate
+agent.Agent.tau = .004
+agent.MultiTaskAgent.tau = .004
+
+# Number of actions sampled for value estimation
+agent.Agent.num_actions_for_value_in_critic_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_critic_loss = 3
+
+agent.Agent.num_actions_for_value_in_actor_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_actor_loss = 3
+
+# Offline RL coefficients for self-play
+# Use balanced mix of online and offline for self-play
+agent.Agent.online_coeff = 0.5
+agent.MultiTaskAgent.online_coeff = 0.5
+agent.Agent.offline_coeff = 0.5
+agent.MultiTaskAgent.offline_coeff = 0.5
+agent.Agent.fbc_filter_func = @agent.binary_filter
+agent.MultiTaskAgent.fbc_filter_func = @agent.binary_filter
+
+# Training hyperparameters
+MetamonAMAGOExperiment.l2_coeff = 5e-5  # Slightly lower than offline-only
+MetamonAMAGOExperiment.learning_rate = 1e-4  # Lower LR for self-play stability
+MetamonAMAGOExperiment.grad_clip = 1.5
+MetamonAMAGOExperiment.critic_loss_weight = 10.
+MetamonAMAGOExperiment.lr_warmup_steps = 500  # Shorter warmup for fine-tuning
+
+# ==== DYNAMIC DAMPING CONFIGURATION ====
+MetamonAMAGOExperiment.use_dynamic_damping = True
+
+# KL regularization schedule
+# Start with moderate KL coefficient, decay with power law
+MetamonAMAGOExperiment.kl_coef_init = 0.05  # Initial KL weight
+MetamonAMAGOExperiment.kl_coef_max = 0.5    # Maximum KL weight (safety cap)
+MetamonAMAGOExperiment.kl_power_alpha = 0.5  # Power-law decay exponent
+MetamonAMAGOExperiment.kl_schedule_steps = 1_000_000  # Decay over 1M steps
+
+# Entropy regularization schedule
+# Maintain exploration with gradually decaying entropy bonus
+MetamonAMAGOExperiment.ent_coef_init = 0.01  # Initial entropy coefficient
+MetamonAMAGOExperiment.ent_coef_min = 0.001  # Minimum entropy (floor)
+MetamonAMAGOExperiment.ent_power_alpha = 0.7  # Slower decay than KL
+MetamonAMAGOExperiment.ent_schedule_steps = 1_000_000
+
+# Adaptive control parameters
+# Automatically adjust LR and KL coefficient based on observed KL divergence
+MetamonAMAGOExperiment.target_kl_per_step = 0.01  # Target KL per update
+MetamonAMAGOExperiment.kl_tolerance = 1.5  # Tolerance band (50%)
+
+# LR adjustment factors
+MetamonAMAGOExperiment.lr_shrink_factor = 0.5  # Halve LR if KL too high
+MetamonAMAGOExperiment.lr_grow_factor = 1.1    # Grow LR slowly if KL too low
+MetamonAMAGOExperiment.min_lr = 1e-6  # Hard floor for LR
+MetamonAMAGOExperiment.max_lr = 1e-3  # Hard cap for LR
+
+# KL coefficient adjustment factors
+MetamonAMAGOExperiment.kl_coef_growth_factor = 1.5  # Increase damping if KL too high
+MetamonAMAGOExperiment.kl_coef_decay_factor = 0.9   # Relax damping if KL too low
+
+# ==== TUNING NOTES ====
+# - If entropy drops too quickly: increase ent_coef_init or decrease ent_power_alpha
+# - If KL divergence is consistently too high: increase kl_coef_init
+# - If training is too slow: increase target_kl_per_step or decrease kl_coef_init
+# - Monitor "KL Divergence", "Policy Entropy", and "Damping/*" metrics in logs

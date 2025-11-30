@@ -12,7 +12,7 @@ Usage:
         --num_battles 10000 \
         --output_dir ~/gen1_selfplay_data/v0 \
         --battle_format gen1ou \
-        --team_set competitive
+        --team_set modern_replays_v2
 
     # Generate 10k battles between two different checkpoints
     python scripts/generate_selfplay_data.py \
@@ -21,7 +21,7 @@ Usage:
         --num_battles 10000 \
         --output_dir ~/gen1_selfplay_data/v0 \
         --battle_format gen1ou \
-        --team_set competitive
+        --team_set modern_replays_v2
 """
 
 import os

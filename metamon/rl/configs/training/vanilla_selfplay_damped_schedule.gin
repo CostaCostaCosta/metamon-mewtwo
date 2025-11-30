@@ -1,0 +1,99 @@
+# Dynamic Damping V2 - Controller + Gentle Annealing
+#
+# This config adds gentle power-law schedules on top of v1's adaptive controller.
+# This matches the full Ataraxos approach: slow decay + fast reactive adjustments.
+#
+# Key differences from v1:
+#   - Power-law schedules ENABLED with gentle decay (alpha=0.2-0.3)
+#   - KL coefficient and entropy bonus gradually relax over training
+#   - Adaptive controller still provides fast feedback on top of slow decay
+#
+# When to use v2:
+#   - After v1 has proven stable (controller oscillates properly)
+#   - For longer training runs where you want gradual exploration decay
+#   - When you want to match the full Ataraxos methodology
+#
+# Expected behavior:
+#   - Early training: Strong damping and exploration (like v1)
+#   - Mid training: Gradual relaxation of both, but controller prevents drift
+#   - Late training: Lower entropy, more exploitation, but stable KL
+#   - KL Coefficient: slow downward trend + fast oscillations
+#   - Entropy Coefficient: slow downward trend toward floor
+
+import amago.agent
+
+# Reward shaping
+agent.Agent.reward_multiplier = 10.
+agent.MultiTaskAgent.reward_multiplier = 10.
+
+# Target network update rate
+agent.Agent.tau = .004
+agent.MultiTaskAgent.tau = .004
+
+# Number of actions sampled for value estimation
+agent.Agent.num_actions_for_value_in_critic_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_critic_loss = 3
+
+agent.Agent.num_actions_for_value_in_actor_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_actor_loss = 3
+
+# Offline RL only - train on fixed self-play dataset
+# Learn from pre-collected self-play battles without online rollouts
+agent.Agent.online_coeff = 0.0
+agent.MultiTaskAgent.online_coeff = 0.0
+agent.Agent.offline_coeff = 1.0
+agent.MultiTaskAgent.offline_coeff = 1.0
+agent.Agent.fbc_filter_func = @agent.binary_filter
+agent.MultiTaskAgent.fbc_filter_func = @agent.binary_filter
+
+# =========================
+# Core optimizer settings
+# =========================
+MetamonAMAGOExperiment.l2_coeff = 5e-5
+MetamonAMAGOExperiment.learning_rate = 5e-5      # Base LR (conservative)
+MetamonAMAGOExperiment.lr_warmup_steps = 500     # Short warmup
+MetamonAMAGOExperiment.max_lr = 1e-4             # Never above Ataraxos max
+MetamonAMAGOExperiment.min_lr = 5e-6             # Matches paper floor
+
+MetamonAMAGOExperiment.grad_clip = 0.3           # Much tighter than 1.5
+
+MetamonAMAGOExperiment.critic_loss_weight = 10.
+
+# =========================
+# Dynamic damping (KL)
+# =========================
+MetamonAMAGOExperiment.use_dynamic_damping = True
+
+# Target KL per policy update ~ Ataraxos 0.005-0.03 range
+# Tuned based on observed equilibrium in v1
+MetamonAMAGOExperiment.target_kl_per_step = 0.02
+MetamonAMAGOExperiment.kl_tolerance = 1.5        # Acceptable band [0.013, 0.03]
+
+# Start with strong-ish damping, let controller + schedule work together
+MetamonAMAGOExperiment.kl_coef_init = 0.10       # Roughly their data-policy KL
+MetamonAMAGOExperiment.kl_coef_max = 0.20        # Cap near magnet+data sum
+
+# For v2: ENABLE gentle power-law decay
+# Power-law schedule: coef_t = coef_0 * (1 + t/T)^(-alpha)
+# With alpha=0.2, coefficient decays slowly over training
+MetamonAMAGOExperiment.kl_power_alpha = 0.2      # Gentle decay (was 0.0 in v1)
+MetamonAMAGOExperiment.kl_schedule_steps = 1_000_000
+
+# How we react to KL deviations (adaptive controller on top of schedule)
+MetamonAMAGOExperiment.lr_shrink_factor = 0.5    # Halve LR when KL too high
+MetamonAMAGOExperiment.lr_grow_factor = 1.1      # Grow slowly when KL low
+
+MetamonAMAGOExperiment.kl_coef_growth_factor = 2.0   # Ramp damping fast if KL high
+MetamonAMAGOExperiment.kl_coef_decay_factor = 0.9    # Relax gently if KL low
+
+# =========================
+# Dynamic damping (entropy)
+# =========================
+MetamonAMAGOExperiment.ent_coef_init = 0.02      # Stronger than 0.01 to avoid collapse
+MetamonAMAGOExperiment.ent_coef_min = 0.005      # Don't let exploration vanish
+
+# For v2: ENABLE gentle entropy decay
+# With alpha=0.3, entropy bonus decays slightly faster than KL
+# This encourages gradual shift from exploration to exploitation
+MetamonAMAGOExperiment.ent_power_alpha = 0.3     # Gentle decay (was 0.0 in v1)
+MetamonAMAGOExperiment.ent_schedule_steps = 1_000_000
