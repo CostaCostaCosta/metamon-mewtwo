@@ -137,6 +137,33 @@ class DampedConservativeBinaryV2_Epoch2(LocalFinetunedModel):
         )
 
 
+@pretrained_model("DampedBinarySuperV1_Epoch4")
+class DampedBinarySuperV1_Epoch4(LocalFinetunedModel):
+    """
+    Damped Binary Super V1 - Epoch 4 (Latest)
+
+    Finetuned from DampedConservativeBinaryV2_Epoch2 on super_dataset.
+    Uses conservative damping with BinaryReward on an expanded dataset.
+
+    Training config:
+    - Base: DampedConservativeBinaryV2_Epoch2
+    - Format: Gen1 OU
+    - Training: vanilla_selfplay_damped_conservative.gin
+    - Reward: BinaryReward (sparse)
+    - Dataset: super_dataset (custom replay directory)
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=SyntheticRLV2,
+            amago_ckpt_dir="/home/eddie/gen1_binary_loop2_ckpt",
+            model_name="damped-binary-super2v1",
+            default_checkpoint=4,
+            train_gin_config="vanilla_selfplay_damped_conservative.gin",
+            reward_function=get_reward_function("BinaryReward"),
+        )
+
+
 ##############################
 ## Gen1 BinaryReward Experiment
 ##############################
