@@ -847,12 +847,6 @@ class MetamonAMAGOExperiment(amago.Experiment):
                 self.kl_window.append(kl_metrics["KL Divergence"])
                 self.dd_step_counter += 1
 
-                # Debug: Print counter every 10 steps
-                if self.dd_step_counter % 10 == 0:
-                    print(f"[DEBUG] dd_step_counter={self.dd_step_counter}, "
-                          f"kl_window_len={len(self.kl_window)}, "
-                          f"recent_kl={kl_metrics['KL Divergence']:.4f}", flush=True)
-
                 # Adapt controller every N steps based on LOCAL KL window (not entire epoch)
                 if self.dd_step_counter >= self.dd_adapt_interval and len(self.kl_window) >= 10:
                     mean_kl = float(np.mean(self.kl_window))

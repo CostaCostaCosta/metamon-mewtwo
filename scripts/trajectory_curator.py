@@ -30,14 +30,15 @@ class BattleMetadata:
     filepath: str
     battle_id: str
     rating: int
-    player1: str
-    player2: str
+    player1: str  # From filename (may be masked)
+    player2: str  # From filename (may be masked)
     date: datetime
     result: str  # WIN or LOSS
     num_turns: int
     pokemon_used: Set[str]
     struggle_used: bool
     num_states: int
+    server: str  # smogtours, showdown, or unknown
 
 
 class TrajectoryAnalyzer:
@@ -47,6 +48,16 @@ class TrajectoryAnalyzer:
         self.data_dir = Path(data_dir)
         self.battles: List[BattleMetadata] = []
         self.loaded = False
+
+    def detect_server(self, battle_id: str) -> str:
+        """Detect which server the battle is from based on battle_id."""
+        battle_id_lower = battle_id.lower()
+        if "smogtours" in battle_id_lower:
+            return "smogtours"
+        elif "gen" in battle_id_lower or "battle" in battle_id_lower:
+            return "showdown"
+        else:
+            return "unknown"
 
     def parse_filename(self, filename: str) -> Optional[Dict]:
         """Parse metadata from filename."""
@@ -162,6 +173,9 @@ class TrajectoryAnalyzer:
         # Check for Struggle
         struggle_used = self.check_struggle(data)
 
+        # Detect server
+        server = self.detect_server(file_meta["battle_id"])
+
         return BattleMetadata(
             filename=filename,
             filepath=str(filepath),
@@ -175,6 +189,7 @@ class TrajectoryAnalyzer:
             pokemon_used=all_pokemon,
             struggle_used=struggle_used,
             num_states=len(states),
+            server=server,
         )
 
     def scan_directory(self, progress=gr.Progress()) -> str:
@@ -218,6 +233,9 @@ class TrajectoryAnalyzer:
         # Date range
         dates = [b.date for b in self.battles]
 
+        # Server counts
+        server_counter = Counter(b.server for b in self.battles)
+
         return {
             "total_battles": len(self.battles),
             "rating_mean": np.mean(ratings),
@@ -234,6 +252,7 @@ class TrajectoryAnalyzer:
             "date_min": min(dates),
             "date_max": max(dates),
             "unique_players": len(set(b.player1 for b in self.battles) | set(b.player2 for b in self.battles)),
+            "server_counts": server_counter,
         }
 
     def filter_battles(
@@ -244,6 +263,9 @@ class TrajectoryAnalyzer:
         max_turns: Optional[int] = None,
         exclude_struggle: bool = False,
         result_filter: Optional[str] = None,
+        min_date: Optional[datetime] = None,
+        max_date: Optional[datetime] = None,
+        server_filter: Optional[str] = None,
     ) -> List[BattleMetadata]:
         """Filter battles based on criteria."""
         filtered = self.battles
@@ -266,6 +288,15 @@ class TrajectoryAnalyzer:
         if result_filter and result_filter != "Both":
             filtered = [b for b in filtered if b.result.upper() == result_filter.upper()]
 
+        if min_date is not None:
+            filtered = [b for b in filtered if b.date >= min_date]
+
+        if max_date is not None:
+            filtered = [b for b in filtered if b.date <= max_date]
+
+        if server_filter and server_filter != "All":
+            filtered = [b for b in filtered if b.server.lower() == server_filter.lower()]
+
         return filtered
 
     def export_filtered_battles(
@@ -275,7 +306,7 @@ class TrajectoryAnalyzer:
         progress=gr.Progress()
     ) -> str:
         """Export filtered battles to a new directory."""
-        output_path = Path(output_dir)
+        output_path = Path(output_dir).expanduser()
         output_path.mkdir(parents=True, exist_ok=True)
 
         copied = 0
@@ -310,10 +341,18 @@ def get_overview_stats():
 
     stats = analyzer.get_statistics()
 
+    server_breakdown = "\n".join([
+        f"- {server.title()}: {count:,} ({100*count/stats['total_battles']:.1f}%)"
+        for server, count in stats['server_counts'].most_common()
+    ])
+
     text = f"""## Dataset Overview
 
 **Total Battles:** {stats['total_battles']:,}
-**Unique Players:** {stats['unique_players']:,}
+**Unique Players:** {stats['unique_players']:,} (from filenames, may be masked)
+
+### Server Distribution
+{server_breakdown}
 
 ### Rating Distribution
 - Mean: {stats['rating_mean']:.0f}
@@ -353,10 +392,29 @@ def get_pokemon_usage_table():
     return df
 
 
-def apply_filters(min_rating, max_rating, min_turns, max_turns, exclude_struggle, result_filter):
+def apply_filters(
+    min_rating, max_rating, min_turns, max_turns, exclude_struggle, result_filter,
+    min_date_str, max_date_str, server_filter
+):
     """Apply filters and return filtered statistics."""
     if analyzer is None or not analyzer.loaded:
         return "Please load data first", pd.DataFrame()
+
+    # Parse dates
+    min_date = None
+    max_date = None
+    if min_date_str:
+        try:
+            min_date = datetime.strptime(min_date_str, "%Y-%m-%d")
+        except ValueError:
+            pass
+    if max_date_str:
+        try:
+            max_date = datetime.strptime(max_date_str, "%Y-%m-%d")
+            # Include the entire day
+            max_date = max_date.replace(hour=23, minute=59, second=59)
+        except ValueError:
+            pass
 
     filtered = analyzer.filter_battles(
         min_rating=min_rating if min_rating > 0 else None,
@@ -365,6 +423,9 @@ def apply_filters(min_rating, max_rating, min_turns, max_turns, exclude_struggle
         max_turns=max_turns if max_turns > 0 else None,
         exclude_struggle=exclude_struggle,
         result_filter=result_filter if result_filter != "Both" else None,
+        min_date=min_date,
+        max_date=max_date,
+        server_filter=server_filter if server_filter != "All" else None,
     )
 
     if not filtered:
@@ -515,6 +576,28 @@ def create_dashboard(default_data_dir: str):
                     )
 
             with gr.Row():
+                with gr.Column():
+                    gr.Markdown("**Date Range**")
+                    min_date = gr.Textbox(
+                        label="Min Date (YYYY-MM-DD)",
+                        placeholder="e.g., 2024-01-01",
+                        value=""
+                    )
+                    max_date = gr.Textbox(
+                        label="Max Date (YYYY-MM-DD)",
+                        placeholder="e.g., 2024-12-31",
+                        value=""
+                    )
+
+                with gr.Column():
+                    gr.Markdown("**Server Filter**")
+                    server_filter = gr.Radio(
+                        label="Server",
+                        choices=["All", "Showdown", "Smogtours", "Unknown"],
+                        value="All"
+                    )
+
+            with gr.Row():
                 exclude_struggle = gr.Checkbox(
                     label="Exclude battles where Struggle was used",
                     value=True
@@ -538,7 +621,11 @@ def create_dashboard(default_data_dir: str):
 
             apply_btn.click(
                 fn=apply_filters,
-                inputs=[min_rating, max_rating, min_turns, max_turns, exclude_struggle, result_filter],
+                inputs=[
+                    min_rating, max_rating, min_turns, max_turns,
+                    exclude_struggle, result_filter,
+                    min_date, max_date, server_filter
+                ],
                 outputs=[filtered_stats, filtered_pokemon_table]
             )
 
