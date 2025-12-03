@@ -354,7 +354,7 @@ class TeamManager:
         except Exception as e:
             return f"Error exporting JSON: {e}"
 
-    def export_to_cache(self, team_set_name: str, battle_format: str = "gen1ou") -> str:
+    def export_to_cache(self, team_set_name: str, battle_format: str = "gen1ou", remove_evs_ivs: bool = False) -> str:
         """Export teams to metamon_cache/teams structure for use in battles"""
         if not self.unique_teams:
             return "No unique teams to export"
@@ -396,17 +396,19 @@ class TeamManager:
 
                         f.write(f"{pokemon['name']}\n")
 
-                        # Add EVs/IVs if they exist (optional)
-                        if 'evs' in pokemon and pokemon['evs']:
-                            f.write(f"EVs: {pokemon['evs']}\n")
-                        if 'ivs' in pokemon and pokemon['ivs']:
-                            f.write(f"IVs: {pokemon['ivs']}\n")
+                        # Add EVs/IVs unless explicitly removed (for Gen 1 compatibility)
+                        if not remove_evs_ivs:
+                            if 'evs' in pokemon and pokemon['evs']:
+                                f.write(f"EVs: {pokemon['evs']}\n")
+                            if 'ivs' in pokemon and pokemon['ivs']:
+                                f.write(f"IVs: {pokemon['ivs']}\n")
 
                         # Add moves
                         for move in pokemon.get('moves', []):
                             f.write(f"- {move}\n")
 
-            return f"""✅ Successfully exported {len(self.unique_teams)} teams to cache!
+            evs_ivs_note = " (EVs/IVs removed)" if remove_evs_ivs else " (with EVs/IVs)"
+            return f"""✅ Successfully exported {len(self.unique_teams)} teams to cache{evs_ivs_note}!
 
 **Location:** `~/metamon_cache/teams/{team_set_name}/{battle_format}/`
 
@@ -537,6 +539,12 @@ def create_dashboard():
                         placeholder="gen1ou"
                     )
 
+                remove_evs_ivs_checkbox = gr.Checkbox(
+                    label="Remove EVs/IVs (for Gen 1 compatibility)",
+                    value=False,
+                    info="Gen 1 uses 'Stat Experience' instead of modern EVs/IVs"
+                )
+
                 export_cache_btn = gr.Button("🚀 Export to Cache (~/metamon_cache/teams)", variant="primary")
                 cache_export_status = gr.Markdown()
 
@@ -586,8 +594,8 @@ def create_dashboard():
         def export_json_handler(output_file):
             return manager.export_json(output_file)
 
-        def export_cache_handler(team_set_name, battle_format):
-            return manager.export_to_cache(team_set_name, battle_format)
+        def export_cache_handler(team_set_name, battle_format, remove_evs_ivs):
+            return manager.export_to_cache(team_set_name, battle_format, remove_evs_ivs)
 
         # Connect events
         load_btn.click(
@@ -637,7 +645,7 @@ def create_dashboard():
 
         export_cache_btn.click(
             fn=export_cache_handler,
-            inputs=[team_set_name_input, battle_format_input],
+            inputs=[team_set_name_input, battle_format_input, remove_evs_ivs_checkbox],
             outputs=[cache_export_status]
         )
 

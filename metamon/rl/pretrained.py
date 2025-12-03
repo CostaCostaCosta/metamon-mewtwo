@@ -185,7 +185,7 @@ class PretrainedModel:
         return checkpoint_path
 
     def initialize_agent(
-        self, checkpoint: Optional[int] = None, log: bool = False
+        self, checkpoint: Optional[int] = None, log: bool = False, device: str = "cuda"
     ) -> amago.Experiment:
         # use the base config and the gin file to configure the model
         amago.cli_utils.use_config(
@@ -203,6 +203,7 @@ class PretrainedModel:
             log=log,
             observation_space=self.observation_space,
             action_space=self.action_space,
+            device=device,
         )
         # starting the experiment will build the initial model
         experiment.start()
@@ -224,6 +225,7 @@ class LocalPretrainedModel(PretrainedModel):
 
     def __init__(self, amago_ckpt_dir: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.amago_ckpt_dir = amago_ckpt_dir
         self.local_ckpt_dir = os.path.join(amago_ckpt_dir, self.model_name, "ckpts")
         if not os.path.exists(self.local_ckpt_dir):
             raise FileNotFoundError(
@@ -236,6 +238,40 @@ class LocalPretrainedModel(PretrainedModel):
             "policy_weights",
             f"policy_epoch_{checkpoint}.pt",
         )
+
+    def initialize_agent(
+        self, checkpoint: Optional[int] = None, log: bool = False, device: str = "cuda"
+    ) -> amago.Experiment:
+        # use the base config and the gin file to configure the model
+        amago.cli_utils.use_config(
+            self.base_config,
+            [self.model_gin_config_path, self.train_gin_config_path],
+            finalize=False,
+        )
+        checkpoint = checkpoint if checkpoint is not None else self.default_checkpoint
+        ckpt_path = self.get_path_to_checkpoint(checkpoint)
+        # For local models, use amago_ckpt_dir directly as ckpt_base_dir
+        # since the structure is amago_ckpt_dir/model_name/ckpts/...
+        ckpt_base_dir = self.amago_ckpt_dir
+        # build an experiment
+        experiment = make_placeholder_experiment(
+            ckpt_base_dir=ckpt_base_dir,
+            run_name=self.model_name,
+            log=log,
+            observation_space=self.observation_space,
+            action_space=self.action_space,
+            device=device,
+        )
+        # starting the experiment will build the initial model
+        experiment.start()
+        if checkpoint > 0:
+            # replace the weights with the pretrained checkpoint
+            print(f"[LocalPretrainedModel] Loading checkpoint {checkpoint} from: {ckpt_path}")
+            experiment.load_checkpoint_from_path(ckpt_path, is_accelerate_state=False)
+            print(f"[LocalPretrainedModel] Checkpoint {checkpoint} loaded successfully")
+        else:
+            print(f"[LocalPretrainedModel] WARNING: Not loading checkpoint (checkpoint={checkpoint})")
+        return experiment
 
 
 class LocalFinetunedModel(LocalPretrainedModel):

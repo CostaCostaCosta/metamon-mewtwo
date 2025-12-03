@@ -21,7 +21,7 @@ classifiers = [
   "Topic :: Games/Entertainment",
 ]
 keywords = ["pokemon", "reinforcement-learning", "machine-learning"]
-dependencies = [ 
+dependencies = [
   "gymnasium>=0.26,<=0.29.1",
   "torch>=2.6",
   "numpy",
@@ -33,6 +33,7 @@ dependencies = [
   "termcolor",
   "huggingface_hub",
   "datasets",
+  "pyzmq>=25.0",
   "poke-env @ git+https://github.com/UT-Austin-RPL/poke-env.git"
 ]
 

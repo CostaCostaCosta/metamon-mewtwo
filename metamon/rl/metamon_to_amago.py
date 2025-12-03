@@ -124,10 +124,14 @@ def make_placeholder_experiment(
     log: bool,
     observation_space: ObservationSpace,
     action_space: ActionSpace,
+    device: str = "cuda",
 ):
     """
     Initialize an AMAGO experiment that will be used to load a pretrained checkpoint
     and manage agent/env interaction.
+
+    Args:
+        device: Device to load model on ('cuda' or 'cpu')
     """
     # the environment is only used to initialize the network
     # before loading the correct checkpoint
@@ -137,6 +141,15 @@ def make_placeholder_experiment(
     )
     dummy_dset = amago.loading.DoNothingDataset()
     dummy_env = lambda: penv
+
+    # Configure device placement for Accelerate
+    # When device='cpu', we want to load model on CPU to save GPU memory
+    import os
+    original_cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+    if device == 'cpu':
+        # Temporarily hide CUDA devices to force CPU loading
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
     experiment = MetamonAMAGOExperiment(
         # assumes that positional args
         # agent_type, tstep_encoder_type,
@@ -170,6 +183,14 @@ def make_placeholder_experiment(
         wandb_entity=os.environ.get("METAMON_WANDB_ENTITY"),
         verbose=True,
     )
+
+    # Restore original CUDA_VISIBLE_DEVICES
+    if device == 'cpu':
+        if original_cuda_visible is not None:
+            os.environ['CUDA_VISIBLE_DEVICES'] = original_cuda_visible
+        else:
+            del os.environ['CUDA_VISIBLE_DEVICES']
+
     return experiment
 
 
