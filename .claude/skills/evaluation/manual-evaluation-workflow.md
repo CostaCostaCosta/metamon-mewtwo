@@ -3,14 +3,145 @@
 **Category**: Evaluation
 **Status**: Active
 **Priority**: High
+**Last Updated**: 2025-12-23
 
 ---
 
 ## Overview
 
-This skill documents how to register trained checkpoints as named agents and run manual evaluations on the Pokemon Showdown ladder.
+This skill documents how to evaluate trained checkpoints. Two methods available:
 
-## Registering Checkpoints as Named Agents
+1. **Direct evaluation with `--custom_checkpoint_path`** (NEW - December 2025): Evaluate checkpoints without registration
+2. **Registration-based evaluation**: Register checkpoints as named agents for repeated use
+
+---
+
+## Method 1: Direct Evaluation (No Registration Required) ✨
+
+**Added**: December 23, 2025
+
+### Quick Start
+
+Evaluate any checkpoint file directly without registering it:
+
+```bash
+python -m metamon.rl.evaluate \
+    --agent <BASE_MODEL> \
+    --custom_checkpoint_path /path/to/checkpoint.pt \
+    --eval_type ladder \
+    --gens 1 \
+    --formats ou \
+    --total_battles 50 \
+    --team_set smogon_pass2_selected
+```
+
+### When to Use This Method
+
+**Use direct evaluation (`--custom_checkpoint_path`) when:**
+- ✅ Testing EMA vs current policy checkpoints
+- ✅ Comparing multiple epochs from same training run
+- ✅ Quick ablation studies
+- ✅ One-off evaluations
+- ✅ Evaluating intermediate checkpoints before deciding which to register
+
+**Use registration (Method 2 below) when:**
+- ❌ Repeatedly evaluating the same checkpoint
+- ❌ Checkpoint will be used in production
+- ❌ Want checkpoint available as CLI option
+
+### How It Works
+
+The `--agent` parameter specifies which **base model config** to use (reward function, observation space, etc.), while `--custom_checkpoint_path` specifies the actual weights to load.
+
+**Example**: Evaluate EMA checkpoint from training
+
+```bash
+# Training was based on SleepLoop5Controller_Epoch2
+# After training, you have:
+#   - ckpts/policy_weights/policy_epoch_2.pt  (current policy)
+#   - ckpts/ema_weights/policy_epoch_2.pt      (EMA policy)
+
+# Evaluate EMA checkpoint:
+python -m metamon.rl.evaluate \
+    --agent SleepLoop5Controller_Epoch2 \
+    --custom_checkpoint_path ~/metamon/models/my_run/ckpts/ema_weights/policy_epoch_2.pt \
+    --eval_type ladder \
+    --gens 1 \
+    --formats ou \
+    --total_battles 50 \
+    --team_set smogon_pass2_selected
+
+# Evaluate current checkpoint for comparison:
+python -m metamon.rl.evaluate \
+    --agent SleepLoop5Controller_Epoch2 \
+    --custom_checkpoint_path ~/metamon/models/my_run/ckpts/policy_weights/policy_epoch_2.pt \
+    --eval_type ladder \
+    --gens 1 \
+    --formats ou \
+    --total_battles 50 \
+    --team_set smogon_pass2_selected
+```
+
+### Important: Base Model Must Match Training
+
+**Critical**: The `--agent` must match the base model used during training, otherwise the reward function/observation space will be wrong.
+
+```bash
+# ✅ Correct: Trained from SleepLoop5Controller_Epoch2
+--agent SleepLoop5Controller_Epoch2 \
+--custom_checkpoint_path ~/my_checkpoint.pt
+
+# ❌ Wrong: Different base model config
+--agent SyntheticRLV2 \
+--custom_checkpoint_path ~/my_checkpoint.pt  # Will have wrong reward/obs config!
+```
+
+### Comparing All Epochs
+
+**Script template** for systematic evaluation:
+
+```bash
+#!/bin/bash
+BASE_DIR=~/metamon/models/my_experiment/my_run
+AGENT=SleepLoop5Controller_Epoch2
+EPOCHS=(0 1 2)
+
+for epoch in "${EPOCHS[@]}"; do
+    echo "=== Evaluating Epoch $epoch ==="
+
+    # Current policy
+    echo "Current policy..."
+    python -m metamon.rl.evaluate \
+        --agent $AGENT \
+        --custom_checkpoint_path $BASE_DIR/ckpts/policy_weights/policy_epoch_${epoch}.pt \
+        --eval_type ladder \
+        --gens 1 \
+        --formats ou \
+        --total_battles 50 \
+        --team_set smogon_pass2_selected
+
+    # EMA policy
+    echo "EMA policy..."
+    python -m metamon.rl.evaluate \
+        --agent $AGENT \
+        --custom_checkpoint_path $BASE_DIR/ckpts/ema_weights/policy_epoch_${epoch}.pt \
+        --eval_type ladder \
+        --gens 1 \
+        --formats ou \
+        --total_battles 50 \
+        --team_set smogon_pass2_selected
+done
+```
+
+### Limitations
+
+**Cannot change model architecture** - The `--agent` base model must have the same architecture as the checkpoint. If you trained a 50M parameter model, you can't load it with a 200M base model config.
+
+**Must know which base model was used** - Need to remember which `--finetune_from_model` was used during training to specify the correct `--agent`.
+
+---
+
+## Method 2: Registering Checkpoints as Named Agents
 
 ### Location
 Edit `metamon/rl/pretrained.py` to add new agent registrations.

@@ -761,6 +761,12 @@ class MetamonAMAGOExperiment(amago.Experiment):
         epistemic_anneal_steps: int = 10000,
         epistemic_anneal_power: float = 0.5,
         epistemic_power: int = 2,
+        # EMA (policy averaging) parameters (gin-configurable)
+        use_ema: bool = False,
+        ema_decay: float = 0.999,
+        ema_update_interval: int = 1,
+        ema_warmup_steps: int = 0,
+        ema_eval_only: bool = True,
         **kwargs,
     ):
         # Debug: Print dynamic damping parameter (commented out to reduce log spam)
@@ -812,6 +818,16 @@ class MetamonAMAGOExperiment(amago.Experiment):
         self.epistemic_anneal_steps = epistemic_anneal_steps
         self.epistemic_anneal_power = epistemic_anneal_power
         self.epistemic_power = epistemic_power
+
+        # EMA (policy averaging) configuration
+        self.use_ema = use_ema
+        self.ema_decay = ema_decay
+        self.ema_update_interval = ema_update_interval
+        self.ema_warmup_steps = ema_warmup_steps
+        self.ema_eval_only = ema_eval_only
+        self.ema_model = None  # Will be initialized in start()
+        self.ema_step_counter = 0
+        self._training_state_dict = None  # Temporary storage for eval weight swapping
         self.epistemic_step = 0  # Track steps for beta annealing
 
     def start(self):
@@ -830,6 +846,15 @@ class MetamonAMAGOExperiment(amago.Experiment):
             )
             # print(f"[Dynamic Damping] Initialized with kl_coef={self.dd_state.kl_coef:.4f}, "
             #       f"ent_coef={self.dd_state.ent_coef:.4f}", flush=True)
+
+        # Initialize EMA model now that policy exists
+        if self.use_ema:
+            import copy
+            self.ema_model = copy.deepcopy(self.policy)
+            self.ema_model.eval()
+            for param in self.ema_model.parameters():
+                param.requires_grad_(False)
+            print(f"[EMA] Initialized with decay={self.ema_decay}, warmup_steps={self.ema_warmup_steps}")
 
     def init_policy(self):
         """Initialize policy and optionally enable dynamic damping."""
@@ -876,6 +901,16 @@ class MetamonAMAGOExperiment(amago.Experiment):
             for param in self.dd_state.ref_model.parameters():
                 param.requires_grad_(False)
             print("[Dynamic Damping] Reference policy updated successfully")
+
+        # Also update EMA model if enabled
+        if self.use_ema and self.ema_model is not None:
+            import copy
+            print("[EMA] Updating EMA model to match loaded checkpoint...")
+            self.ema_model = copy.deepcopy(self.policy)
+            self.ema_model.eval()
+            for param in self.ema_model.parameters():
+                param.requires_grad_(False)
+            print("[EMA] EMA model updated successfully")
 
     def enable_dynamic_damping(self, config=None):
         """Manually enable dynamic damping after initialization.
@@ -1117,6 +1152,35 @@ class MetamonAMAGOExperiment(amago.Experiment):
 
         return kl_loss, metrics
 
+    def _update_ema_weights(self):
+        """Update EMA model weights using exponential moving average.
+
+        EMA update formula: ema_param = decay * ema_param + (1 - decay) * current_param
+
+        Respects warmup period and update interval for gradual/efficient updates.
+        """
+        import torch
+
+        self.ema_step_counter += 1
+
+        # Warmup: skip EMA updates until warmup period completes
+        if self.ema_step_counter < self.ema_warmup_steps:
+            return
+
+        # Update interval: only update every N steps (for efficiency)
+        if self.ema_step_counter % self.ema_update_interval != 0:
+            return
+
+        # EMA update: ema_param = decay * ema_param + (1 - decay) * current_param
+        with torch.no_grad():
+            for ema_param, current_param in zip(
+                self.ema_model.parameters(),
+                self.policy.parameters()
+            ):
+                ema_param.data.mul_(self.ema_decay).add_(
+                    current_param.data, alpha=1 - self.ema_decay
+                )
+
     def train_step(self, batch: Batch, log_step: bool):
         """Training step with dynamic damping schedule updates and adaptive control."""
         # Update damping schedules before training step
@@ -1126,7 +1190,47 @@ class MetamonAMAGOExperiment(amago.Experiment):
         # Perform standard training step
         metrics = super().train_step(batch, log_step)
 
+        # Update EMA weights after gradient step
+        if self.use_ema:
+            self._update_ema_weights()
+
         return metrics
+
+    def save_ema_checkpoint(self, epoch: int):
+        """Save EMA model weights separately from training checkpoint.
+
+        Saves to: {ckpt_dir}/ema_weights/policy_epoch_{epoch}.pt
+
+        This allows loading EMA checkpoints independently of training checkpoints
+        for evaluation or deployment.
+        """
+        import os
+        import torch
+
+        if not self.use_ema:
+            return
+
+        # Create EMA checkpoint directory
+        ema_ckpt_dir = os.path.join(self.ckpt_dir, "ema_weights")
+        os.makedirs(ema_ckpt_dir, exist_ok=True)
+
+        # Save EMA weights
+        ema_path = os.path.join(ema_ckpt_dir, f"policy_epoch_{epoch}.pt")
+        torch.save(self.ema_model.state_dict(), ema_path)
+        print(f"[EMA] Saved checkpoint to {ema_path}")
+
+    def save_checkpoint(self) -> None:
+        """Override AMAGO's save_checkpoint to also save EMA weights.
+
+        AMAGO calls this method from learn() loop when epoch % ckpt_interval == 0.
+        We must override this (not train_epoch) to ensure EMA checkpoints are saved.
+        """
+        # Call parent's checkpoint saving (saves training state + policy weights)
+        super().save_checkpoint()
+
+        # Save EMA checkpoint if enabled
+        if self.use_ema:
+            self.save_ema_checkpoint(self.epoch)
 
     def train_epoch(self, epoch: int):
         """Training epoch with adaptive LR/KL control during training (every N steps)."""
@@ -1348,9 +1452,52 @@ class MetamonAMAGOExperiment(amago.Experiment):
         amago.utils.call_async_env(self.val_envs, "take_long_break")
         return out
 
+    def _swap_to_ema_for_eval(self):
+        """Temporarily swap policy weights with EMA weights for evaluation.
+
+        Stores current training weights in self._training_state_dict for later restoration.
+        """
+        import torch
+
+        # Store current training weights (on CPU to save GPU memory)
+        self._training_state_dict = {
+            k: v.cpu().clone()
+            for k, v in self.policy.state_dict().items()
+        }
+
+        # Load EMA weights into policy
+        self.policy.load_state_dict(self.ema_model.state_dict())
+        print("[EMA] Swapped to EMA weights for evaluation")
+
+    def _restore_training_weights(self):
+        """Restore training weights after evaluation.
+
+        Moves stored weights back to device and loads them into policy.
+        """
+        if self._training_state_dict is None:
+            raise RuntimeError("Cannot restore training weights: no backup found")
+
+        # Move weights back to policy device and load
+        device = next(self.policy.parameters()).device
+        self.policy.load_state_dict(
+            {k: v.to(device) for k, v in self._training_state_dict.items()}
+        )
+        self._training_state_dict = None
+        print("[EMA] Restored training weights after evaluation")
+
     def evaluate_val(self):
         amago.utils.call_async_env(self.val_envs, "resume_from_break")
+
+        # Swap to EMA weights for evaluation if enabled
+        if self.use_ema and self.ema_eval_only:
+            self._swap_to_ema_for_eval()
+
         out = super().evaluate_val()
+
+        # Restore training weights after evaluation
+        if self.use_ema and self.ema_eval_only:
+            self._restore_training_weights()
+
         amago.utils.call_async_env(self.val_envs, "take_long_break")
         return out
 
