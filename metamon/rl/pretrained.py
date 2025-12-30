@@ -1151,3 +1151,418 @@ class EpistemicLoop6Critic_Epoch4(LocalPretrainedModel):
             reward_function=get_reward_function("AggressiveShapedRewardSleep"),
             default_checkpoint=4,
         )
+
+
+###################################
+## EMA Ablation Fast Decay (0.99) #
+###################################
+
+
+class EMACheckpointModel(LocalPretrainedModel):
+    """Base class for EMA checkpoint models that supports both current and EMA weights."""
+
+    def __init__(self, epoch: int, use_ema_weights: bool = True, *args, **kwargs):
+        self.use_ema_weights = use_ema_weights
+        self.epoch = epoch
+        super().__init__(*args, **kwargs)
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        weights_type = "ema_weights" if self.use_ema_weights else "policy_weights"
+        return os.path.join(
+            self.local_ckpt_dir,
+            weights_type,
+            f"policy_epoch_{checkpoint}.pt",
+        )
+
+
+@pretrained_model()
+class EMAFast099_Current_E0(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - Current Policy - Epoch 0"""
+    def __init__(self):
+        super().__init__(
+            epoch=0,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=0,
+        )
+
+
+@pretrained_model()
+class EMAFast099_EMA_E0(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - EMA Policy - Epoch 0"""
+    def __init__(self):
+        super().__init__(
+            epoch=0,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=0,
+        )
+
+
+@pretrained_model()
+class EMAFast099_Current_E1(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - Current Policy - Epoch 1"""
+    def __init__(self):
+        super().__init__(
+            epoch=1,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=1,
+        )
+
+
+@pretrained_model()
+class EMAFast099_EMA_E1(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - EMA Policy - Epoch 1"""
+    def __init__(self):
+        super().__init__(
+            epoch=1,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=1,
+        )
+
+
+@pretrained_model()
+class EMAFast099_Current_E2(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - Current Policy - Epoch 2"""
+    def __init__(self):
+        super().__init__(
+            epoch=2,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=2,
+        )
+
+
+@pretrained_model()
+class EMAFast099_EMA_E2(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - EMA Policy - Epoch 2"""
+    def __init__(self):
+        super().__init__(
+            epoch=2,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=2,
+        )
+
+
+@pretrained_model()
+class EMAFast099_Current_E3(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - Current Policy - Epoch 3"""
+    def __init__(self):
+        super().__init__(
+            epoch=3,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=3,
+        )
+
+
+@pretrained_model()
+class EMAFast099_EMA_E3(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - EMA Policy - Epoch 3"""
+    def __init__(self):
+        super().__init__(
+            epoch=3,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=3,
+        )
+
+
+@pretrained_model()
+class EMAFast099_Current_E4(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - Current Policy - Epoch 4"""
+    def __init__(self):
+        super().__init__(
+            epoch=4,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=4,
+        )
+
+
+@pretrained_model()
+class EMAFast099_EMA_E4(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - EMA Policy - Epoch 4"""
+    def __init__(self):
+        super().__init__(
+            epoch=4,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=4,
+        )
+
+
+@pretrained_model()
+class EMAFast099_Current_E5(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - Current Policy - Epoch 5"""
+    def __init__(self):
+        super().__init__(
+            epoch=5,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=5,
+        )
+
+
+@pretrained_model()
+class EMAFast099_EMA_E5(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - EMA Policy - Epoch 5"""
+    def __init__(self):
+        super().__init__(
+            epoch=5,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=5,
+        )
+
+
+@pretrained_model()
+class EMAFast099_Current_E6(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - Current Policy - Epoch 6"""
+    def __init__(self):
+        super().__init__(
+            epoch=6,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=6,
+        )
+
+
+@pretrained_model()
+class EMAFast099_EMA_E6(EMACheckpointModel):
+    """EMA Fast Decay 0.99 - EMA Policy - Epoch 6"""
+    def __init__(self):
+        super().__init__(
+            epoch=6,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_agg_fast_099",
+            model_name="ema_agg_fast_099",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_fast.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=6,
+        )
+
+
+###################################
+## EMA Slow Decay (0.9999) #######
+###################################
+
+
+@pretrained_model()
+class EMASlow09999_Current_E0(EMACheckpointModel):
+    """
+    EMA Slow Decay 0.9999 - Current Policy - Epoch 0
+
+    Training run with very slow EMA decay (0.9999) for policy averaging.
+    Base model: SleepLoop5Controller_Epoch2
+    Dataset: super_dataset_loop6 (~175k replays)
+    Config: selfplay_controller_v1_ema_slow.gin
+    Reward: AggressiveShapedRewardSleep
+    """
+    def __init__(self):
+        super().__init__(
+            epoch=0,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_decay_09999",
+            model_name="ema_decay_09999",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_slow.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=0,
+        )
+
+
+@pretrained_model()
+class EMASlow09999_EMA_E0(EMACheckpointModel):
+    """EMA Slow Decay 0.9999 - EMA Policy - Epoch 0"""
+    def __init__(self):
+        super().__init__(
+            epoch=0,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_decay_09999",
+            model_name="ema_decay_09999",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_slow.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=0,
+        )
+
+
+@pretrained_model()
+class EMASlow09999_Current_E2(EMACheckpointModel):
+    """EMA Slow Decay 0.9999 - Current Policy - Epoch 2"""
+    def __init__(self):
+        super().__init__(
+            epoch=2,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_decay_09999",
+            model_name="ema_decay_09999",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_slow.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=2,
+        )
+
+
+@pretrained_model()
+class EMASlow09999_EMA_E2(EMACheckpointModel):
+    """EMA Slow Decay 0.9999 - EMA Policy - Epoch 2"""
+    def __init__(self):
+        super().__init__(
+            epoch=2,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_decay_09999",
+            model_name="ema_decay_09999",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_slow.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=2,
+        )
+
+
+@pretrained_model()
+class EMASlow09999_Current_E4(EMACheckpointModel):
+    """EMA Slow Decay 0.9999 - Current Policy - Epoch 4"""
+    def __init__(self):
+        super().__init__(
+            epoch=4,
+            use_ema_weights=False,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_decay_09999",
+            model_name="ema_decay_09999",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_slow.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=4,
+        )
+
+
+@pretrained_model()
+class EMASlow09999_EMA_E4(EMACheckpointModel):
+    """EMA Slow Decay 0.9999 - EMA Policy - Epoch 4"""
+    def __init__(self):
+        super().__init__(
+            epoch=4,
+            use_ema_weights=True,
+            amago_ckpt_dir="/home/eddie/metamon/models/ema_decay_09999",
+            model_name="ema_decay_09999",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1_ema_slow.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=4,
+        )

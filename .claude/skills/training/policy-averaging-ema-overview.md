@@ -289,6 +289,8 @@ Where α is the decay rate (e.g., 0.999)
 
 ### **Context: Gen1 OU is Hidden-Information**
 
+**Current Observation Space**: Uses `DefaultObservationSpace` (base model). `ExpandedObservationSpace` (adds PP tracking, sleep/freeze flags, tera types) requires model migration and is planned for future checkpoint releases.
+
 **Hidden Information Sources**:
 1. **Team preview**: Opponent's full team known, but move order unknown
 2. **Move prediction**: Must predict opponent's move selection
@@ -699,7 +701,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config epistemic_ema_rl.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 5 \
     --save_dir ~/metamon/models/gen1ou_ema_test \
     --eval_gens 1 \

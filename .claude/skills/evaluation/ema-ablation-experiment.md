@@ -33,6 +33,7 @@ export METAMON_CACHE_DIR=/home/eddie/metamon_cache
 - **Dataset**: `~/metamon/trajectories/super_dataset_loop6/gen1ou/`
 - **Format filtering**: `--formats gen1ou` (critical!)
 - **Base model**: `SleepLoop5Controller_Epoch2` (current best)
+- **Observation space**: Uses default `DefaultObservationSpace` (ExpandedObservationSpace requires model migration, planned for future)
 
 ### Available Resources
 - **Existing baselines**: Multiple training runs without EMA (different gin configs)
@@ -60,7 +61,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config selfplay_controller_v1.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 3 \
     --save_dir ~/metamon/models/ema_ablation/control_no_ema \
     --eval_gens 1 \
@@ -104,7 +104,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config selfplay_controller_v1_ema.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 3 \
     --save_dir ~/metamon/models/ema_ablation/treatment_ema_0999 \
     --eval_gens 1 \
@@ -147,7 +146,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config selfplay_controller_v1_ema_fast.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 3 \
     --save_dir ~/metamon/models/ema_ablation/decay_099 \
     --eval_gens 1 \
@@ -183,7 +181,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config selfplay_controller_v1_ema_slow.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 3 \
     --save_dir ~/metamon/models/ema_ablation/decay_09999 \
     --eval_gens 1 \
@@ -877,7 +874,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config selfplay_controller_v1.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 3 \
     --save_dir ~/metamon/models/ema_ablation/control_no_ema \
     --eval_gens 1 \
@@ -892,7 +888,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config selfplay_controller_v1_ema.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 3 \
     --save_dir ~/metamon/models/ema_ablation/treatment_ema_0999 \
     --eval_gens 1 \
@@ -907,7 +902,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config selfplay_controller_v1_ema_fast.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 3 \
     --save_dir ~/metamon/models/ema_ablation/decay_099 \
     --eval_gens 1 \
@@ -922,7 +916,6 @@ python -u -m metamon.rl.finetune_from_hf \
     --formats gen1ou \
     --train_gin_config selfplay_controller_v1_ema_slow.gin \
     --reward_function AggressiveShapedRewardSleep \
-    --obs_space ExpandedObservationSpace \
     --epochs 3 \
     --save_dir ~/metamon/models/ema_ablation/decay_09999 \
     --eval_gens 1 \
