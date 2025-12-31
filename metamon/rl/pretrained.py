@@ -262,10 +262,13 @@ class LocalPretrainedModel(PretrainedModel):
         )
 
     def initialize_agent(
-        self, checkpoint: Optional[int] = None, log: bool = False
+        self,
+        checkpoint: Optional[int] = None,
+        log: bool = False,
+        action_temperature: float = 1.0,
     ) -> amago.Experiment:
         amago.cli_utils.use_config(
-            self.base_config,
+            self.base_config | {"MetamonDiscrete.temperature": action_temperature},
             [self.model_gin_config_path, self.train_gin_config_path],
             finalize=False,
         )
@@ -980,10 +983,13 @@ class LocalLatestCheckpointModel(LocalPretrainedModel):
         )
 
     def initialize_agent(
-        self, checkpoint: Optional[int] = None, log: bool = False
+        self,
+        checkpoint: Optional[int] = None,
+        log: bool = False,
+        action_temperature: float = 1.0,
     ) -> amago.Experiment:
         amago.cli_utils.use_config(
-            self.base_config,
+            self.base_config | {"MetamonDiscrete.temperature": action_temperature},
             [self.model_gin_config_path, self.train_gin_config_path],
             finalize=False,
         )
@@ -1584,4 +1590,25 @@ class EMASlow09999_EMA_E4(EMACheckpointModel):
             action_space=get_action_space("MinimalActionSpace"),
             reward_function=get_reward_function("AggressiveShapedRewardSleep"),
             default_checkpoint=4,
+        )
+
+@pretrained_model()
+class SleepLoop5Controller_Epoch2(LocalPretrainedModel):
+    """
+    Gen1 OU specialist trained with aggressive sleep reward function.
+    Controller v1 config with tight KL control for stable self-play 
+    finetuning.
+    """
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/home/eddie/metamon/models/gen1_control_sleep_loop5",
+            model_name="sleep-loop5-control",
+            model_gin_config="synthetic_multitaskagent.gin",
+            train_gin_config="selfplay_controller_v1.gin",
+            tokenizer=get_tokenizer("allreplays-v3"),
+            observation_space=get_observation_space("DefaultObservationSpace"),
+            action_space=get_action_space("MinimalActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedRewardSleep"),
+            default_checkpoint=2,
+            battle_backend="poke-env",  # Match training environment
         )

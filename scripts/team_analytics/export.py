@@ -267,6 +267,50 @@ class TeamExporter:
         return created_files
 
     @staticmethod
+    def _normalize_pokemon_name(name: str) -> str:
+        """Normalize Pokemon name to proper case (e.g., 'jynx' -> 'Jynx')."""
+        # Handle special cases
+        special_cases = {
+            'mr. mime': 'Mr. Mime',
+            'mr-mime': 'Mr. Mime',
+            'mrmime': 'Mr. Mime',
+            'farfetchd': "Farfetch'd",
+            "farfetch'd": "Farfetch'd",
+            'nidoran-f': 'Nidoran-F',
+            'nidoran-m': 'Nidoran-M',
+        }
+
+        lower_name = name.lower().strip()
+        if lower_name in special_cases:
+            return special_cases[lower_name]
+
+        # Default: title case
+        return name.strip().title()
+
+    @staticmethod
+    def _normalize_move_name(move: str) -> str:
+        """Normalize move name to proper format (e.g., 'thunderwave' -> 'Thunder Wave')."""
+        # Handle special cases first
+        special_cases = {
+            'softboiled': 'Soft-Boiled',
+            'soft-boiled': 'Soft-Boiled',
+            'hi jump kick': 'High Jump Kick',
+            'vicegrip': 'Vice Grip',
+            'doubleedge': 'Double-Edge',
+            'double-edge': 'Double-Edge',
+        }
+
+        lower_move = move.lower().strip()
+        if lower_move in special_cases:
+            return special_cases[lower_move]
+
+        # Replace hyphens with spaces and title case
+        # This handles: "thunder-wave" -> "Thunder Wave"
+        normalized = move.replace('-', ' ').strip().title()
+
+        return normalized
+
+    @staticmethod
     def _convert_to_showdown_format(
         team_data: List[Dict],
         species_list: List[str],
@@ -311,8 +355,9 @@ class TeamExporter:
             added_species.add(species_lower)
             pokemon_count += 1
 
-            # Pokemon name
-            lines.append(species)
+            # Pokemon name - NORMALIZED
+            normalized_species = TeamExporter._normalize_pokemon_name(species)
+            lines.append(normalized_species)
 
             # Ability (if available and not "noability")
             # Skip abilities for Gen 1 (they don't exist in Gen 1)
@@ -320,7 +365,7 @@ class TeamExporter:
             if ability and ability.lower() not in ['noability', 'none', '']:
                 lines.append(f"Ability: {ability}")
 
-            # Moves (if available)
+            # Moves (if available) - NORMALIZED
             moves = pokemon.get('moves', [])
             if isinstance(moves, list):
                 for move in moves:
@@ -329,13 +374,14 @@ class TeamExporter:
                     else:
                         move_name = str(move)
                     if move_name:
-                        lines.append(f"- {move_name}")
+                        normalized_move = TeamExporter._normalize_move_name(move_name)
+                        lines.append(f"- {normalized_move}")
 
             # Empty line between Pokemon
             lines.append("")
 
         # If team_data is incomplete, fill in missing Pokemon from species_list
-        # (up to 6 total Pokemon)
+        # (up to 6 total Pokemon) - NORMALIZED
         for species in species_list:
             if pokemon_count >= 6:
                 break
@@ -344,7 +390,8 @@ class TeamExporter:
             if species_lower not in added_species and species != "Unknown":
                 added_species.add(species_lower)
                 pokemon_count += 1
-                lines.append(species)
+                normalized_species = TeamExporter._normalize_pokemon_name(species)
+                lines.append(normalized_species)
                 lines.append("")
 
         return "\n".join(lines)
