@@ -385,10 +385,24 @@ def run_selfplay(
     # Create self-play runner
     runner = SelfPlayRunner(vec_env, policy_p1, policy_p2)
 
-    # Run self-play with progress tracking
+    # Memory monitoring setup
+    try:
+        import psutil
+        process = psutil.Process()
+        memory_monitoring_available = True
+        if verbose:
+            print("Memory monitoring enabled (psutil available)\n")
+    except ImportError:
+        memory_monitoring_available = False
+        if verbose:
+            print("Memory monitoring unavailable (psutil not installed)\n")
+
+    # Run self-play with progress tracking and automatic error recovery
     all_trajectories = []
     battles_completed = 0
     start_time = time.time()
+    consecutive_errors = 0
+    max_consecutive_errors = 3
 
     while battles_completed < num_battles:
         # Determine how many battles to collect in this chunk
@@ -400,16 +414,23 @@ def run_selfplay(
             if battles_completed > 0:
                 rate = battles_completed / elapsed
                 eta = (num_battles - battles_completed) / rate
+
+                # Add memory usage info
+                mem_info = ""
+                if memory_monitoring_available:
+                    mem_mb = process.memory_info().rss / 1024**2
+                    mem_info = f" | Memory: {mem_mb:.1f} MB"
+
                 print(
                     f"Progress: {battles_completed}/{num_battles} battles "
                     f"({battles_completed/num_battles*100:.1f}%) | "
                     f"Rate: {rate:.1f} battles/sec | "
-                    f"ETA: {eta:.1f}s"
+                    f"ETA: {eta:.1f}s{mem_info}"
                 )
             else:
                 print(f"Starting data collection...")
 
-        # Collect trajectories
+        # Collect trajectories with automatic error recovery
         try:
             trajectories = runner.collect_trajectories(
                 num_battles=chunk_size,
@@ -419,26 +440,71 @@ def run_selfplay(
 
             all_trajectories.extend(trajectories)
             battles_completed += len(trajectories)
+            consecutive_errors = 0  # Reset error counter on success
 
             # Save incrementally (every 100 battles)
             if len(all_trajectories) >= 100:
-                save_batch(all_trajectories, save_dir, format_name, run_name, mappings, verbose)
-                all_trajectories = []
+                try:
+                    save_batch(all_trajectories, save_dir, format_name, run_name, mappings, verbose)
+                    all_trajectories = []
+                except Exception as e:
+                    print(f"⚠️  Warning: Failed to save incremental batch: {e}")
+                    print(f"   Will retry with next batch. Continuing...")
+                    # Don't clear all_trajectories - will try again later
 
         except KeyboardInterrupt:
             print("\n\n⚠️  Interrupted by user. Saving collected trajectories...")
             break
 
         except Exception as e:
-            print(f"\n❌ Error during data collection: {e}")
-            import traceback
-            traceback.print_exc()
-            print("\nSaving collected trajectories before exit...")
-            break
+            consecutive_errors += 1
+
+            print(f"\n⚠️  Error during batch collection (attempt {consecutive_errors}/{max_consecutive_errors})")
+            print(f"   Error: {type(e).__name__}: {e}")
+
+            if consecutive_errors >= max_consecutive_errors:
+                print(f"\n❌ Too many consecutive errors ({max_consecutive_errors}). Stopping.")
+                import traceback
+                traceback.print_exc()
+                break
+
+            # Save progress before retrying
+            if all_trajectories:
+                print(f"   Saving {len(all_trajectories)} collected trajectories...")
+                try:
+                    save_batch(all_trajectories, save_dir, format_name, run_name, mappings, verbose)
+                    all_trajectories = []
+                except Exception as save_error:
+                    print(f"   Warning: Failed to save: {save_error}")
+
+            # Retry with fresh environment
+            print(f"   Recreating environment and retrying...")
+            time.sleep(2)  # Brief pause to let resources cleanup
+
+            try:
+                # Recreate vectorized environment
+                vec_env = PyKMNVectorEnv(
+                    teams_p1=teams_p1,
+                    teams_p2=teams_p2,
+                    num_envs=batch_size,
+                    obs_space=obs_space,
+                    reward_fn=reward_fn,
+                    battle_format=format_name,
+                    track_trajectories=True,
+                )
+                runner = SelfPlayRunner(vec_env, policy_p1, policy_p2)
+                print(f"   ✓ Environment recreated, continuing...")
+            except Exception as recreate_error:
+                print(f"   ❌ Failed to recreate environment: {recreate_error}")
+                break
 
     # Save remaining trajectories
     if all_trajectories:
-        save_batch(all_trajectories, save_dir, format_name, run_name, mappings, verbose)
+        print(f"\nSaving final {len(all_trajectories)} trajectories...")
+        try:
+            save_batch(all_trajectories, save_dir, format_name, run_name, mappings, verbose)
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to save final batch: {e}")
 
     # Final statistics
     total_time = time.time() - start_time

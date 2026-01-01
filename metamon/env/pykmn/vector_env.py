@@ -108,6 +108,11 @@ class PyKMNVectorEnv:
         self.mappings = precompute_mappings()
         self.action_mappings = ActionMappings.create()
 
+        # Create per-environment observation spaces to prevent cross-battle state leaks
+        # Each battle needs its own observation space to track revealed_opponents, sleep/freeze flags
+        import copy
+        self.obs_spaces = [copy.deepcopy(obs_space) for _ in range(num_envs)]
+
         # Store teams
         self.teams_p1 = teams_p1
         self.teams_p2 = teams_p2
@@ -133,6 +138,14 @@ class PyKMNVectorEnv:
             Tuple of (obs_p1, obs_p2, legal_masks_p1, legal_masks_p2)
             All arrays have shape (num_envs, ...).
         """
+        # Explicitly clear old references before creating new battles
+        # Let Python's reference counting handle cleanup naturally
+        for i in range(self.num_envs):
+            self.battles[i] = None
+            self.results[i] = None
+            self.prev_states_p1[i] = None
+            self.prev_states_p2[i] = None
+
         # Create new battles
         for i in range(self.num_envs):
             self.battles[i] = Battle(
@@ -148,8 +161,10 @@ class PyKMNVectorEnv:
         self.dones = np.zeros(self.num_envs, dtype=bool)
         self.trajectories = [[] for _ in range(self.num_envs)]
 
-        # Reset observation space state (for stateful obs spaces like ExpandedObservationSpace)
-        self.obs_space.reset()
+        # Reset per-environment observation spaces at batch start
+        for obs_space in self.obs_spaces:
+            if hasattr(obs_space, 'reset'):
+                obs_space.reset()
 
         # Extract initial observations and legal masks
         obs_p1, obs_p2 = self._extract_observations()
@@ -296,9 +311,10 @@ class PyKMNVectorEnv:
             state_p1 = features_to_universal_state(features_p1, self.mappings)
             state_p2 = features_to_universal_state(features_p2, self.mappings)
 
-            # Convert to observation format using ObservationSpace
-            obs_p1 = self.obs_space(state_p1)
-            obs_p2 = self.obs_space(state_p2)
+            # Convert to observation format using per-environment ObservationSpace
+            # Each environment has its own obs_space that maintains state across steps
+            obs_p1 = self.obs_spaces[i](state_p1)
+            obs_p2 = self.obs_spaces[i](state_p2)
 
             obs_list_p1.append(obs_p1)
             obs_list_p2.append(obs_p2)
@@ -414,9 +430,28 @@ class PyKMNVectorEnv:
         """
         trajectories = self.completed_trajectories.copy()
         self.completed_trajectories = []
+
+        # Force garbage collection to free trajectory data immediately
+        # This helps prevent memory fragmentation from large trajectory buffers
+        import gc
+        gc.collect()
+
         return trajectories
 
     def close(self):
         """Clean up resources."""
-        # PyKMN battles are automatically freed by Python GC
-        pass
+        # Explicitly clear all battle references to help Python GC
+        # free C++ PyKMN objects immediately
+        for i in range(self.num_envs):
+            self.battles[i] = None
+            self.results[i] = None
+            self.prev_states_p1[i] = None
+            self.prev_states_p2[i] = None
+
+        # Clear trajectories
+        self.trajectories = [[] for _ in range(self.num_envs)]
+        self.completed_trajectories = []
+
+        # Force garbage collection to free C++ memory
+        import gc
+        gc.collect()

@@ -1,9 +1,9 @@
 # PyKMN Integration for Fast Self-Play Data Generation
 
 **Category**: Training Workflows
-**Status**: ✅ Production Ready (Bug Fixed 2025-12-31)
-**Last Updated**: 2025-12-31 (Critical Bug Fix Applied)
-**Related Skills**: `selfplay-loop-workflow`, `format-filtering-troubleshooting`, `pretrained-pykmn-integration`
+**Status**: ✅ Production Ready (Batched Inference Implemented 2025-12-31)
+**Last Updated**: 2025-12-31 (Batched AMAGO Inference Added)
+**Related Skills**: `pykmn-batched-inference-optimization`, `selfplay-loop-workflow`, `format-filtering-troubleshooting`, `pretrained-pykmn-integration`
 
 ---
 
@@ -20,7 +20,7 @@ Successfully integrated pypkmn (libpkmn) for fast self-play data generation with
 - Average battle length: 57.6 turns
 - 100% battle completion rate
 
-**Note**: Current bottleneck is sequential AMAGO inference. **Batched inference across N environments is the next major optimization** for achieving 10-100x speedup.
+**Update (2025-12-31)**: **Batched inference implemented!** See `pykmn-batched-inference-optimization` skill for details. Achieved **10.9x end-to-end speedup** (1.9 → 20.8 battles/sec) with batch_size=16 on RTX 5090.
 
 ---
 

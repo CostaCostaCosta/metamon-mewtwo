@@ -1431,6 +1431,20 @@ class TokenizedObservationSpace(ObservationSpace):
         self.base_obs_space = base_obs_space
         self.tokenizer = tokenizer
 
+    def __deepcopy__(self, memo):
+        """Custom deepcopy that shares the tokenizer but copies the base observation space.
+
+        Tokenizers are read-only and can be safely shared across copies.
+        Base observation spaces need their own copies to maintain independent state.
+        """
+        import copy
+        # Share the tokenizer (don't deepcopy it)
+        # Deepcopy the base observation space to maintain independent state
+        return TokenizedObservationSpace(
+            base_obs_space=copy.deepcopy(self.base_obs_space, memo),
+            tokenizer=self.tokenizer  # Shared, not copied
+        )
+
     def reset(self):
         self.base_obs_space.reset()
 

@@ -242,6 +242,16 @@ class LocalPolicyRunner(PolicyRunner):
                     sample=True,
                 )
 
+        # Detach hidden state to prevent computational graph retention
+        # This prevents memory leaks from accumulated gradients across thousands of steps
+        if isinstance(self.hidden_state, torch.Tensor):
+            self.hidden_state = self.hidden_state.detach()
+        elif isinstance(self.hidden_state, (tuple, list)):
+            self.hidden_state = type(self.hidden_state)(
+                h.detach() if isinstance(h, torch.Tensor) else h
+                for h in self.hidden_state
+            )
+
         # Extract actions: (N, 1, 1) -> (N,)
         actions_np = actions.squeeze(-1).squeeze(1).cpu().numpy().astype(np.int32)
 
