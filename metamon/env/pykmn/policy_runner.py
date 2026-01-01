@@ -369,6 +369,9 @@ class SelfPlayRunner:
         """
         Collect trajectories from self-play battles.
 
+        OPTIMIZED: Runs full batches to completion before resetting,
+        maximizing throughput from batched inference.
+
         Args:
             num_battles: Number of complete battles to collect
             max_steps_per_battle: Maximum steps before timeout
@@ -378,94 +381,78 @@ class SelfPlayRunner:
             List of Trajectory objects (length = num_battles)
         """
         collected_trajectories = []
-        total_steps = 0
-        battles_completed = 0
 
-        # Reset environment
-        obs_p1, obs_p2, masks_p1, masks_p2 = self.vec_env.reset()
+        while len(collected_trajectories) < num_battles:
+            # Determine batch size (might be smaller for last batch)
+            battles_remaining = num_battles - len(collected_trajectories)
+            current_batch_size = min(self.vec_env.num_envs, battles_remaining)
 
-        # Reset policy states if they support it
-        if hasattr(self.policy_p1, "reset"):
-            self.policy_p1.reset()
-        if hasattr(self.policy_p2, "reset"):
-            self.policy_p2.reset()
+            # Reset environment for new batch
+            obs_p1, obs_p2, masks_p1, masks_p2 = self.vec_env.reset()
 
-        while battles_completed < num_battles:
-            # Infer actions for both players
-            actions_p1 = self.policy_p1.infer(obs_p1, masks_p1)
-            actions_p2 = self.policy_p2.infer(obs_p2, masks_p2)
+            # Reset policy states
+            if hasattr(self.policy_p1, "reset"):
+                self.policy_p1.reset(current_batch_size)
+            if hasattr(self.policy_p2, "reset"):
+                self.policy_p2.reset(current_batch_size)
 
-            # Filter illegal actions (safety check)
-            actions_p1 = filter_illegal_actions(actions_p1, masks_p1)
-            actions_p2 = filter_illegal_actions(actions_p2, masks_p2)
+            total_steps = 0
+            batch_complete = False
 
-            # Step environment
-            obs_p1, obs_p2, rewards_p1, rewards_p2, dones, info = self.vec_env.step(
-                actions_p1, actions_p2
-            )
+            # Run until ALL environments in batch finish or timeout
+            while not batch_complete and total_steps < max_steps_per_battle:
+                # Infer actions for both players
+                actions_p1 = self.policy_p1.infer(obs_p1, masks_p1)
+                actions_p2 = self.policy_p2.infer(obs_p2, masks_p2)
 
-            if verbose and total_steps % 100 == 0:
-                print(f"  Step {total_steps}: rewards=({rewards_p1[0]:.2f}, {rewards_p2[0]:.2f}), "
-                      f"done={dones[0]}, battles_completed={battles_completed}")
+                # Filter illegal actions (safety check)
+                actions_p1 = filter_illegal_actions(actions_p1, masks_p1)
+                actions_p2 = filter_illegal_actions(actions_p2, masks_p2)
 
-            # ✅ FIX #3: Update policy rewards for RL2 state
-            if hasattr(self.policy_p1, "update_rewards"):
-                self.policy_p1.update_rewards(rewards_p1)
-            if hasattr(self.policy_p2, "update_rewards"):
-                self.policy_p2.update_rewards(rewards_p2)
+                # Step environment
+                obs_p1, obs_p2, rewards_p1, rewards_p2, dones, info = self.vec_env.step(
+                    actions_p1, actions_p2
+                )
 
-            # ✅ FIX #2 + #4: Reset hidden states + time counters for finished episodes
-            if dones.any():
-                if hasattr(self.policy_p1, "reset_hidden_state_for_dones"):
-                    self.policy_p1.reset_hidden_state_for_dones(dones)
-                if hasattr(self.policy_p2, "reset_hidden_state_for_dones"):
-                    self.policy_p2.reset_hidden_state_for_dones(dones)
+                # Update policy rewards for RL2 state
+                if hasattr(self.policy_p1, "update_rewards"):
+                    self.policy_p1.update_rewards(rewards_p1)
+                if hasattr(self.policy_p2, "update_rewards"):
+                    self.policy_p2.update_rewards(rewards_p2)
 
-            # Extract legal masks for next step
-            masks_p1, masks_p2 = self.vec_env._extract_legal_masks()
+                # Reset hidden states for finished episodes
+                if dones.any():
+                    if hasattr(self.policy_p1, "reset_hidden_state_for_dones"):
+                        self.policy_p1.reset_hidden_state_for_dones(dones)
+                    if hasattr(self.policy_p2, "reset_hidden_state_for_dones"):
+                        self.policy_p2.reset_hidden_state_for_dones(dones)
 
-            total_steps += 1
+                # Extract legal masks for next step
+                masks_p1, masks_p2 = self.vec_env._extract_legal_masks()
 
-            # Check for completed battles
-            if info["num_done"] > 0:
-                completed = self.vec_env.get_completed_trajectories()
-                collected_trajectories.extend(completed)
-                battles_completed = len(collected_trajectories)
+                total_steps += 1
 
+                # Check if batch is complete (all environments done)
+                if info["num_done"] == current_batch_size:
+                    batch_complete = True
+
+            # Collect all completed trajectories from this batch
+            completed = self.vec_env.get_completed_trajectories()
+            collected_trajectories.extend(completed[:battles_remaining])
+
+            if verbose:
+                print(
+                    f"  ✓ Batch complete: {len(completed)} battles in {total_steps} steps "
+                    f"(total: {len(collected_trajectories)}/{num_battles})"
+                )
+
+            # Timeout warning
+            if total_steps >= max_steps_per_battle and not batch_complete:
                 if verbose:
                     print(
-                        f"  ✓ Battle completed! {battles_completed}/{num_battles} done "
-                        f"({total_steps} total steps)"
+                        f"  ⚠️  Batch timeout at {max_steps_per_battle} steps "
+                        f"({info['num_done']}/{current_batch_size} completed)"
                     )
-
-                # Reset finished environments
-                # TODO: Implement partial reset for only finished envs
-                # For now, reset all when any finish (simplified)
-                if battles_completed < num_battles:
-                    obs_p1, obs_p2, masks_p1, masks_p2 = self.vec_env.reset()
-                    total_steps = 0
-
-                    # Reset policy states
-                    if hasattr(self.policy_p1, "reset"):
-                        self.policy_p1.reset()
-                    if hasattr(self.policy_p2, "reset"):
-                        self.policy_p2.reset()
-
-            # Timeout check
-            if total_steps >= max_steps_per_battle:
-                if verbose:
-                    print(
-                        f"Warning: Reached max steps ({max_steps_per_battle}), "
-                        "resetting environments"
-                    )
-                obs_p1, obs_p2, masks_p1, masks_p2 = self.vec_env.reset()
-                total_steps = 0
-
-                # Reset policy states
-                if hasattr(self.policy_p1, "reset"):
-                    self.policy_p1.reset()
-                if hasattr(self.policy_p2, "reset"):
-                    self.policy_p2.reset()
 
         return collected_trajectories[:num_battles]
 
