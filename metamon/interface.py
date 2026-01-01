@@ -1035,12 +1035,32 @@ class ObservationSpace(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def state_to_obs(self, state: UniversalState):
+    def state_to_obs(self, state: UniversalState, obs_state=None):
+        """Convert state to observation.
+
+        Args:
+            state: Current game state
+            obs_state: Optional per-environment observation state (for stateful observation spaces)
+
+        Returns:
+            If obs_state is provided: (obs_dict, updated_obs_state) tuple
+            If obs_state is None: obs_dict only
+        """
         raise NotImplementedError
 
-    def __call__(self, state: UniversalState) -> dict[str, np.ndarray]:
-        obs = self.state_to_obs(state)
-        return obs
+    def __call__(self, state: UniversalState, obs_state=None):
+        """Convert state to observation.
+
+        Args:
+            state: Current game state
+            obs_state: Optional per-environment observation state (for state-explicit protocol)
+
+        Returns:
+            If obs_state is provided and observation space supports it: (obs_dict, updated_obs_state)
+            Otherwise: obs_dict
+        """
+        result = self.state_to_obs(state, obs_state) if obs_state is not None else self.state_to_obs(state)
+        return result
 
 
 @register_observation_space()
@@ -1146,7 +1166,16 @@ class DefaultObservationSpace(ObservationSpace):
         blanks = 1 + (14 if active else 0)
         return [-2.0] * blanks
 
-    def state_to_obs(self, state: UniversalState) -> dict[str, np.ndarray]:
+    def state_to_obs(self, state: UniversalState, obs_state=None) -> dict[str, np.ndarray]:
+        """Convert state to observation (stateless, ignores obs_state).
+
+        Args:
+            state: Current game state
+            obs_state: Ignored (DefaultObservationSpace is stateless)
+
+        Returns:
+            Observation dict with "text" and "numbers" keys
+        """
         player_str = ["<player>"] + self._get_pokemon_string_features(
             state.player_active_pokemon, active=True
         )
@@ -1233,10 +1262,32 @@ class ExpandedObservationSpace(DefaultObservationSpace):
         timesteps.
 
     This observation space moves some of that information into every timestep. Also adds tera types for gen 9.
+
+    NOTE: This observation space now uses state-explicit protocol to avoid shared mutable state
+    across vectorized environments. Use init_obs_state() and pass obs_state to state_to_obs().
     """
 
+    def init_obs_state(self):
+        """Initialize per-environment observation state (NEW: state-explicit protocol).
+
+        Returns a dictionary containing:
+            - revealed_opponents_mask: Fixed-size boolean array for revealed species (no heap growth)
+            - revealed_opponents_names: Fixed-size array of species names
+            - revealed_count: Number of revealed opponents so far
+            - any_opponent_asleep: Boolean flag
+            - any_opponent_frozen: Boolean flag
+        """
+        return {
+            'revealed_opponents_mask': np.zeros(151, dtype=bool),  # Gen 1 has 151 species
+            'revealed_opponents_names': np.full(6, "<blank>", dtype=object),
+            'revealed_count': 0,
+            'any_opponent_asleep': False,
+            'any_opponent_frozen': False,
+        }
+
     def reset(self):
-        # reset the history-dependent features at the start of each battle
+        # DEPRECATED: For backward compatibility with single-env code
+        # Vectorized environments should use init_obs_state() instead
         self.any_opponent_asleep = False
         self.any_opponent_frozen = False
         self.revealed_opponents = set()
@@ -1288,33 +1339,90 @@ class ExpandedObservationSpace(DefaultObservationSpace):
             return []
         return [-2.0] * 4
 
-    def state_to_obs(self, state: UniversalState):
+    def state_to_obs(self, state: UniversalState, obs_state=None):
+        """Convert UniversalState to observation dict.
+
+        Args:
+            state: Current game state
+            obs_state: Optional per-environment observation state (NEW: state-explicit protocol).
+                       If None, uses legacy self.* attributes (deprecated for vectorized envs).
+
+        Returns:
+            If obs_state is provided: (obs_dict, updated_obs_state)
+            If obs_state is None: obs_dict (legacy single-env behavior)
+        """
         # get default observation + PP features
         obs = super().state_to_obs(state)
 
         opponent = state.opponent_active_pokemon
-        # (sleep/freeze clause only activates when *we* put the opponent to sleep/freeze,
-        # which is not what's being tracked here, but this covers the main failure case
-        # and the subtlety has been learnable without this feature.)
-        self.any_opponent_asleep |= opponent.status == "slp"
-        self.any_opponent_frozen |= opponent.status == "frz"
-        new_features = [
-            self.any_opponent_asleep,
-            self.any_opponent_frozen,
-            state.can_tera,
-        ]
-        obs["numbers"] = np.concatenate([obs["numbers"], new_features])
 
-        # add a list of revealed opponents padded to length 6 while reusing
-        # the existing <blank> token to avoid making a new vocabulary.
-        self.revealed_opponents.add(opponent.base_species)
-        revealed = [opp_name for opp_name in sorted(self.revealed_opponents)]
-        while len(revealed) < 6:
-            revealed.append("<blank>")
-        obs["text"] = np.array(
-            obs["text"].item() + " " + " ".join(revealed[:6]), dtype=np.str_
-        )
-        return obs
+        # NEW PATH: State-explicit (vectorized environments)
+        if obs_state is not None:
+            # Update flags (no mutation of shared state)
+            any_asleep = obs_state['any_opponent_asleep'] or (opponent.status == "slp")
+            any_frozen = obs_state['any_opponent_frozen'] or (opponent.status == "frz")
+
+            new_features = [any_asleep, any_frozen, state.can_tera]
+            obs["numbers"] = np.concatenate([obs["numbers"], new_features])
+
+            # Add revealed opponent using fixed-size buffer (no heap growth)
+            revealed_names = obs_state['revealed_opponents_names'].copy()
+            revealed_count = obs_state['revealed_count']
+
+            # Check if this opponent is new (simple linear search, max 6 items)
+            opponent_name = opponent.base_species
+            is_new = True
+            for i in range(revealed_count):
+                if revealed_names[i] == opponent_name:
+                    is_new = False
+                    break
+
+            if is_new and revealed_count < 6:
+                revealed_names[revealed_count] = opponent_name
+                revealed_count += 1
+
+            # Sort and format (use view, don't modify original)
+            revealed_sorted = sorted([name for name in revealed_names if name != "<blank>"])
+            revealed_final = revealed_sorted + ["<blank>"] * (6 - len(revealed_sorted))
+
+            obs["text"] = np.array(
+                obs["text"].item() + " " + " ".join(revealed_final[:6]), dtype=np.str_
+            )
+
+            # Return observation AND updated state
+            updated_obs_state = {
+                'revealed_opponents_mask': obs_state['revealed_opponents_mask'],  # unused for now
+                'revealed_opponents_names': revealed_names,
+                'revealed_count': revealed_count,
+                'any_opponent_asleep': any_asleep,
+                'any_opponent_frozen': any_frozen,
+            }
+            return obs, updated_obs_state
+
+        # LEGACY PATH: Mutate self (single-env backward compatibility)
+        else:
+            # (sleep/freeze clause only activates when *we* put the opponent to sleep/freeze,
+            # which is not what's being tracked here, but this covers the main failure case
+            # and the subtlety has been learnable without this feature.)
+            self.any_opponent_asleep |= opponent.status == "slp"
+            self.any_opponent_frozen |= opponent.status == "frz"
+            new_features = [
+                self.any_opponent_asleep,
+                self.any_opponent_frozen,
+                state.can_tera,
+            ]
+            obs["numbers"] = np.concatenate([obs["numbers"], new_features])
+
+            # add a list of revealed opponents padded to length 6 while reusing
+            # the existing <blank> token to avoid making a new vocabulary.
+            self.revealed_opponents.add(opponent.base_species)
+            revealed = [opp_name for opp_name in sorted(self.revealed_opponents)]
+            while len(revealed) < 6:
+                revealed.append("<blank>")
+            obs["text"] = np.array(
+                obs["text"].item() + " " + " ".join(revealed[:6]), dtype=np.str_
+            )
+            return obs
 
 
 @register_observation_space()
@@ -1325,15 +1433,30 @@ class TeamPreviewObservationSpace(ExpandedObservationSpace):
         # adds 6 new tokens for teampreview
         return {"text": 87 + 13 + 6}
 
-    def state_to_obs(self, state: UniversalState):
-        obs = super().state_to_obs(state)
+    def state_to_obs(self, state: UniversalState, obs_state=None):
+        # Call parent (ExpandedObservationSpace) with obs_state
+        result = super().state_to_obs(state, obs_state)
+
+        # Handle both tuple (new protocol) and dict (legacy) return formats
+        if obs_state is not None and isinstance(result, tuple):
+            obs, updated_obs_state = result
+        else:
+            obs = result
+            updated_obs_state = None
+
+        # Add teampreview
         teampreview = [opp_name for opp_name in sorted(state.opponent_teampreview)]
         while len(teampreview) < 6:
             teampreview.append("<blank>")
         obs["text"] = np.array(
             obs["text"].item() + " " + " ".join(teampreview[:6]), dtype=np.str_
         )
-        return obs
+
+        # Return in appropriate format
+        if obs_state is not None:
+            return obs, updated_obs_state
+        else:
+            return obs
 
 
 @register_observation_space()
@@ -1375,6 +1498,12 @@ class PatchPokeAgentTeraBug(ObservationSpace):
         self.base_obs_space = base_obs_space
         super().__init__()
 
+    def init_obs_state(self):
+        """Forward to base observation space if it supports state-explicit protocol."""
+        if hasattr(self.base_obs_space, 'init_obs_state'):
+            return self.base_obs_space.init_obs_state()
+        return None
+
     def reset(self):
         self.base_obs_space.reset()
 
@@ -1386,13 +1515,13 @@ class PatchPokeAgentTeraBug(ObservationSpace):
     def tokenizable(self):
         return self.base_obs_space.tokenizable
 
-    def state_to_obs(self, state: UniversalState):
+    def state_to_obs(self, state: UniversalState, obs_state=None):
         patched_state = copy.deepcopy(state)
         # patch player pokemon tera types to "notype"
         patched_state.player_active_pokemon.tera_type = "notype"
         for pokemon in patched_state.available_switches:
             pokemon.tera_type = "notype"
-        return self.base_obs_space.state_to_obs(patched_state)
+        return self.base_obs_space.state_to_obs(patched_state, obs_state)
 
 
 # Register patched versions of observation spaces for PokeAgent Challenge compatibility
@@ -1431,19 +1560,11 @@ class TokenizedObservationSpace(ObservationSpace):
         self.base_obs_space = base_obs_space
         self.tokenizer = tokenizer
 
-    def __deepcopy__(self, memo):
-        """Custom deepcopy that shares the tokenizer but copies the base observation space.
-
-        Tokenizers are read-only and can be safely shared across copies.
-        Base observation spaces need their own copies to maintain independent state.
-        """
-        import copy
-        # Share the tokenizer (don't deepcopy it)
-        # Deepcopy the base observation space to maintain independent state
-        return TokenizedObservationSpace(
-            base_obs_space=copy.deepcopy(self.base_obs_space, memo),
-            tokenizer=self.tokenizer  # Shared, not copied
-        )
+    def init_obs_state(self):
+        """Forward to base observation space if it supports state-explicit protocol."""
+        if hasattr(self.base_obs_space, 'init_obs_state'):
+            return self.base_obs_space.init_obs_state()
+        return None
 
     def reset(self):
         self.base_obs_space.reset()
@@ -1469,11 +1590,36 @@ class TokenizedObservationSpace(ObservationSpace):
 
         return gym.spaces.Dict(new_space_dict)
 
-    def state_to_obs(self, state: UniversalState):
-        obs = self.base_obs_space.state_to_obs(state)
+    def state_to_obs(self, state: UniversalState, obs_state=None):
+        """Convert state to tokenized observation.
+
+        Args:
+            state: Current game state
+            obs_state: Optional per-environment observation state (forwarded to base_obs_space)
+
+        Returns:
+            If obs_state is provided: (tokenized_obs_dict, updated_obs_state)
+            If obs_state is None: tokenized_obs_dict (legacy behavior)
+        """
+        # Call base observation space (handles both new and legacy protocols)
+        base_result = self.base_obs_space.state_to_obs(state, obs_state)
+
+        # Handle return format (tuple for new protocol, dict for legacy)
+        if obs_state is not None and isinstance(base_result, tuple):
+            obs, updated_obs_state = base_result
+        else:
+            obs = base_result
+            updated_obs_state = None
+
+        # Tokenize text fields
         for tokenizable_key in self.base_obs_space.tokenizable.keys():
             base_obs_key = obs.pop(tokenizable_key)
             obs[f"{tokenizable_key}_tokens"] = self.tokenizer.tokenize(
                 base_obs_key.tolist()
             )
-        return obs
+
+        # Return in appropriate format
+        if obs_state is not None:
+            return obs, updated_obs_state
+        else:
+            return obs

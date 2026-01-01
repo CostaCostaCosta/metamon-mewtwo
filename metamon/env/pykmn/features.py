@@ -137,8 +137,18 @@ def pykmn_to_features_raw(
             base_pp = MOVES[move_name]
             active_move_max_pp[i] = min(math.floor(base_pp * 8 / 5), 61)
 
-    # Active Pokemon boosts
+    # Active Pokemon boosts (with defensive defaults for missing keys)
     active_boosts = battle.boosts(player)
+    # PyKMN sometimes returns incomplete boost dictionaries in edge cases
+    active_boosts_safe = {
+        'atk': active_boosts.get('atk', 0),
+        'def': active_boosts.get('def', 0),
+        'spc': active_boosts.get('spc', 0),
+        'spe': active_boosts.get('spe', 0),
+        'accuracy': active_boosts.get('accuracy', 0),
+        'evasion': active_boosts.get('evasion', 0),
+    }
+    active_boosts = active_boosts_safe
 
     # Active Pokemon status
     # Get status from slot 1 (active Pokemon is always in slot 1)
@@ -168,7 +178,18 @@ def pykmn_to_features_raw(
             base_pp = MOVES[move_name]
             opp_move_max_pp[i] = min(math.floor(base_pp * 8 / 5), 61)
 
+    # Opponent boosts (with defensive defaults for missing keys)
     opp_boosts = battle.boosts(opponent)
+    # PyKMN sometimes returns incomplete boost dictionaries in edge cases
+    opp_boosts_safe = {
+        'atk': opp_boosts.get('atk', 0),
+        'def': opp_boosts.get('def', 0),
+        'spc': opp_boosts.get('spc', 0),
+        'spe': opp_boosts.get('spe', 0),
+        'accuracy': opp_boosts.get('accuracy', 0),
+        'evasion': opp_boosts.get('evasion', 0),
+    }
+    opp_boosts = opp_boosts_safe
 
     # Opponent active Pokemon status
     try:

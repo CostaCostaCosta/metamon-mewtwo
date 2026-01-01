@@ -108,10 +108,13 @@ class PyKMNVectorEnv:
         self.mappings = precompute_mappings()
         self.action_mappings = ActionMappings.create()
 
-        # Create per-environment observation spaces to prevent cross-battle state leaks
-        # Each battle needs its own observation space to track revealed_opponents, sleep/freeze flags
-        import copy
-        self.obs_spaces = [copy.deepcopy(obs_space) for _ in range(num_envs)]
+        # NEW: Per-environment observation state (state-explicit protocol)
+        # This eliminates shared mutable state across environments
+        if hasattr(self.obs_space, 'init_obs_state'):
+            self.obs_states = [self.obs_space.init_obs_state() for _ in range(num_envs)]
+        else:
+            # Legacy observation spaces without state-explicit protocol
+            self.obs_states = [None] * num_envs
 
         # Store teams
         self.teams_p1 = teams_p1
@@ -161,10 +164,13 @@ class PyKMNVectorEnv:
         self.dones = np.zeros(self.num_envs, dtype=bool)
         self.trajectories = [[] for _ in range(self.num_envs)]
 
-        # Reset per-environment observation spaces at batch start
-        for obs_space in self.obs_spaces:
-            if hasattr(obs_space, 'reset'):
-                obs_space.reset()
+        # Reset per-environment observation state (NEW: state-explicit protocol)
+        if hasattr(self.obs_space, 'init_obs_state'):
+            self.obs_states = [self.obs_space.init_obs_state() for _ in range(self.num_envs)]
+        else:
+            # Legacy fallback: reset shared observation space
+            if hasattr(self.obs_space, 'reset'):
+                self.obs_space.reset()
 
         # Extract initial observations and legal masks
         obs_p1, obs_p2 = self._extract_observations()
@@ -299,7 +305,7 @@ class PyKMNVectorEnv:
         obs_list_p2 = []
 
         for i in range(self.num_envs):
-            # Extract raw features
+            # Extract raw features (C++ → Python conversion happens HERE)
             features_p1 = pykmn_to_features_raw(
                 self.battles[i], self.results[i], Player.P1, self.mappings
             )
@@ -307,20 +313,26 @@ class PyKMNVectorEnv:
                 self.battles[i], self.results[i], Player.P2, self.mappings
             )
 
-            # Convert to UniversalState
+            # Convert to UniversalState (pure Python/numpy, no C++ references)
             state_p1 = features_to_universal_state(features_p1, self.mappings)
             state_p2 = features_to_universal_state(features_p2, self.mappings)
 
-            # Convert to observation format using per-environment ObservationSpace
-            # Each environment has its own obs_space that maintains state across steps
-            obs_p1 = self.obs_spaces[i](state_p1)
-            obs_p2 = self.obs_spaces[i](state_p2)
+            # NEW: Use per-environment observation state (state-explicit protocol)
+            # This eliminates shared mutable state across environments
+            if self.obs_states[i] is not None:
+                # State-explicit path: pass state, get (obs, updated_state)
+                obs_p1, self.obs_states[i] = self.obs_space(state_p1, self.obs_states[i])
+                obs_p2, self.obs_states[i] = self.obs_space(state_p2, self.obs_states[i])
+            else:
+                # Legacy path: mutates shared observation space (suboptimal but backward compatible)
+                obs_p1 = self.obs_space(state_p1)
+                obs_p2 = self.obs_space(state_p2)
 
             obs_list_p1.append(obs_p1)
             obs_list_p2.append(obs_p2)
 
         # Stack into batched observations
-        # obs_space returns a dict with "numbers" and "text" keys
+        # obs_space returns a dict with "numbers" and "text" keys (or "numbers" and "text_tokens")
         batched_obs_p1 = {
             key: np.stack([obs[key] for obs in obs_list_p1])
             for key in obs_list_p1[0].keys()
