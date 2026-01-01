@@ -48,7 +48,13 @@ class LocalPolicyRunner(PolicyRunner):
     Run inference using a local pretrained metamon model.
 
     Loads model from HuggingFace or local checkpoint and runs
-    inference on GPU or CPU.
+    inference on GPU or CPU with batched inference support.
+
+    IMPROVEMENTS:
+    - Per-environment time indexing (not global counter)
+    - Buffer preallocation for zero-copy operations
+    - Mixed precision support (bfloat16 autocast)
+    - Proper hidden state reset for episodic boundaries
     """
 
     def __init__(
@@ -57,6 +63,7 @@ class LocalPolicyRunner(PolicyRunner):
         checkpoint: Optional[int] = None,
         device: str = "cuda",
         temperature: float = 1.0,
+        use_amp: bool = True,
         verbose: bool = False,
     ):
         """
@@ -67,15 +74,17 @@ class LocalPolicyRunner(PolicyRunner):
             checkpoint: Checkpoint number (None for default)
             device: Device to run inference on ("cuda" or "cpu")
             temperature: Sampling temperature (1.0 = unmodified, higher = more random)
+            use_amp: Use mixed precision (bfloat16) for inference (default: True)
+            verbose: Print debug info (default: False)
         """
         from metamon.rl.pretrained import get_pretrained_model
-        import torch.nn.functional as F
 
         self.model_name = model_name
         self.checkpoint = checkpoint
         self.device = torch.device(device)
         self.temperature = temperature
         self.verbose = verbose
+        self.use_amp = use_amp and (device == "cuda")
 
         # Load pretrained model
         print(f"Loading pretrained model: {model_name}")
@@ -92,28 +101,47 @@ class LocalPolicyRunner(PolicyRunner):
         self.agent = experiment.policy
         self.agent.eval()  # Set to evaluation mode
 
+        # Enable TF32 for better performance on Ampere+ GPUs (RTX 30/40 series)
+        if self.use_amp:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            print("Mixed precision (bfloat16) enabled with TF32 matmul")
+
         # Get action space size from the pretrained model
         self.action_dim = pretrained_cls.action_space.gym_space.n
         print(f"Action space size: {self.action_dim}")
 
-        # Initialize recurrent hidden state (required for inference mode)
-        # Following pattern from amago.experiment.interact()
-        self.hidden_state = None  # Will be initialized on first infer() call
+        # State will be initialized on first infer()
+        self.hidden_state = None
+        self.prev_actions = None  # (N,) tensor
+        self.prev_rewards = None  # (N,) tensor
+        self.time_idxs = None     # (N,) tensor - PER-ENV counters (not global!)
 
-        # Track RL2 state (prev action + reward)
-        self.prev_actions = None  # shape: (batch_size,)
-        self.prev_rewards = None  # shape: (batch_size,)
-        self.time_idx = 0
+        # Preallocated buffers (allocated on first infer to avoid overhead)
+        self.rl2_buffer = None                   # (N, action_dim+1)
+        self.prev_action_onehot_buffer = None    # (N, action_dim)
 
         print(f"Model loaded successfully! Action dim: {self.action_dim}")
 
-    def reset(self):
-        """Reset episode state (call when starting new episodes)."""
-        # Reset hidden state (will be re-initialized on next infer call)
+    def reset(self, batch_size: Optional[int] = None):
+        """
+        Reset episode state (call when starting new episodes).
+
+        Args:
+            batch_size: If provided, preallocate buffers for this batch size
+        """
         self.hidden_state = None
         self.prev_actions = None
         self.prev_rewards = None
-        self.time_idx = 0
+        self.time_idxs = None
+
+        # Preallocate buffers if batch_size known
+        if batch_size is not None:
+            self.time_idxs = torch.zeros((batch_size,), dtype=torch.long, device=self.device)
+            self.rl2_buffer = torch.zeros((batch_size, self.action_dim + 1),
+                                          dtype=torch.float32, device=self.device)
+            self.prev_action_onehot_buffer = torch.zeros((batch_size, self.action_dim),
+                                                          dtype=torch.float32, device=self.device)
 
     def infer(
         self,
@@ -121,7 +149,13 @@ class LocalPolicyRunner(PolicyRunner):
         legal_mask_batch: np.ndarray,
     ) -> np.ndarray:
         """
-        Run inference with the pretrained model.
+        Run batched inference with the pretrained model.
+
+        OPTIMIZED FOR BATCHING:
+        - Per-env time indexing (not global counter)
+        - Preallocated buffers (no per-step allocations)
+        - Mixed precision (bfloat16) support
+        - Async GPU transfers
 
         Args:
             obs_dict: Dictionary of observations with keys like "numbers", "text_tokens"
@@ -136,92 +170,101 @@ class LocalPolicyRunner(PolicyRunner):
 
         batch_size = legal_mask_batch.shape[0]
 
-        # Initialize hidden state on first call (required for inference mode)
+        # Initialize on first call
         if self.hidden_state is None:
             self.hidden_state = self.agent.traj_encoder.init_hidden_state(
                 batch_size, self.device
             )
+        if self.time_idxs is None:
+            # First inference: initialize per-env time counters and buffers
+            self.time_idxs = torch.zeros((batch_size,), dtype=torch.long, device=self.device)
+            self.rl2_buffer = torch.zeros((batch_size, self.action_dim + 1),
+                                          dtype=torch.float32, device=self.device)
+            self.prev_action_onehot_buffer = torch.zeros((batch_size, self.action_dim),
+                                                          dtype=torch.float32, device=self.device)
 
-        # Convert observations to torch tensors on device
-        obs_torch = {}
-        for key, value in obs_dict.items():
-            obs_torch[key] = torch.from_numpy(value).to(self.device)
+        # Convert observations to torch (async GPU transfer)
+        obs_torch = {
+            k: torch.from_numpy(v).to(self.device, non_blocking=True)
+            for k, v in obs_dict.items()
+        }
 
-        # Add illegal action mask to observations (AMAGO expects this)
-        # Note: AMAGO uses "illegal_actions" where True = illegal
+        # ✅ FIX #1: Legal action masking (already embedded in observations)
+        # MetamonMaskedActor will apply mask internally via straight_from_obs["illegal_actions"]
         illegal_mask = ~legal_mask_batch  # Invert: True = illegal
-
-        # Trim mask to match model's action space (e.g., 9 for MinimalActionSpace, 13 for full)
         illegal_mask_trimmed = illegal_mask[:, :self.action_dim]
 
-        if self.verbose and batch_size > 0:
-            print(f"[PolicyRunner] legal_mask_batch shape: {legal_mask_batch.shape}, "
-                  f"raw_legal={legal_mask_batch[0]}, "
-                  f"trimmed_legal={legal_mask_batch[0, :self.action_dim]}")
+        # Ensure bool dtype for consistency
+        obs_torch["illegal_actions"] = torch.from_numpy(illegal_mask_trimmed).to(
+            self.device, non_blocking=True
+        ).bool()
 
-        obs_torch["illegal_actions"] = torch.from_numpy(illegal_mask_trimmed).to(self.device)
-
-        # Build RL2 input (prev action + reward)
+        # ✅ FIX #3 + #8: Build RL2 input (reuse preallocated buffers, no allocations!)
         if self.prev_actions is None:
-            # First step: zero init
-            rl2s = torch.zeros(
-                (batch_size, self.action_dim + 1), device=self.device, dtype=torch.float32
-            )
-            time_idxs = torch.zeros((batch_size,), dtype=torch.long, device=self.device)
+            # First step: zeros
+            self.rl2_buffer.zero_()
         else:
-            # Concatenate prev action (one-hot) + prev reward
-            prev_action_onehot = F.one_hot(
-                self.prev_actions.long(), self.action_dim
-            ).float()
-            rl2s = torch.cat(
-                [prev_action_onehot, self.prev_rewards.unsqueeze(-1)], dim=-1
+            # Scatter prev_actions into onehot buffer (avoids F.one_hot allocation)
+            self.prev_action_onehot_buffer.zero_()
+            self.prev_action_onehot_buffer.scatter_(
+                dim=1,
+                index=self.prev_actions.long().unsqueeze(1),
+                value=1.0
             )
-            time_idxs = torch.full(
-                (batch_size,), self.time_idx, dtype=torch.long, device=self.device
-            )
+            # Concatenate onehot + reward (in-place via slicing)
+            self.rl2_buffer[:, :self.action_dim] = self.prev_action_onehot_buffer
+            self.rl2_buffer[:, self.action_dim] = self.prev_rewards
 
-        # Add sequence dimension (AMAGO expects [batch, length, ...])
-        # Following the pattern from amago.experiment.interact()
+        # Add sequence dimension: (N, ...) -> (N, 1, ...)
         obs_torch_seq = {k: v.unsqueeze(1) for k, v in obs_torch.items()}
-        rl2s_seq = rl2s.unsqueeze(1)
-        # time_idxs needs shape (B, L, 1) so squeeze(-1) in position embedding gives (B, L)
-        time_idxs_seq = time_idxs.unsqueeze(1).unsqueeze(2)  # (batch,) -> (batch, 1, 1)
+        rl2s_seq = self.rl2_buffer.unsqueeze(1)
 
-        # Get actions from agent
-        with torch.no_grad():
-            actions, self.hidden_state = self.agent.get_actions(
-                obs=obs_torch_seq,
-                rl2s=rl2s_seq,
-                time_idxs=time_idxs_seq,
-                hidden_state=self.hidden_state,
-                sample=True,
-            )
+        # ✅ FIX #4: Per-env time indexing (not global!)
+        time_idxs_seq = self.time_idxs.unsqueeze(1).unsqueeze(2)  # (N,) -> (N, 1, 1)
 
-        # Remove sequence and action dimensions, convert to numpy
-        # actions shape: (batch, length, 1) -> squeeze to (batch,)
+        # ✅ FIX #7: Mixed precision via autocast (not .half())
+        with torch.inference_mode():  # Faster than no_grad()
+            if self.use_amp:
+                with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                    actions, self.hidden_state = self.agent.get_actions(
+                        obs=obs_torch_seq,
+                        rl2s=rl2s_seq,
+                        time_idxs=time_idxs_seq,
+                        hidden_state=self.hidden_state,
+                        sample=True,
+                    )
+            else:
+                actions, self.hidden_state = self.agent.get_actions(
+                    obs=obs_torch_seq,
+                    rl2s=rl2s_seq,
+                    time_idxs=time_idxs_seq,
+                    hidden_state=self.hidden_state,
+                    sample=True,
+                )
+
+        # Extract actions: (N, 1, 1) -> (N,)
         actions_np = actions.squeeze(-1).squeeze(1).cpu().numpy().astype(np.int32)
 
         if self.verbose:
             legal_actions = np.where(legal_mask_batch[0])[0]
-            print(f"[PolicyRunner] Step {self.time_idx}: action={actions_np[0]}, "
+            print(f"[PolicyRunner] Step {self.time_idxs[0].item()}: action={actions_np[0]}, "
                   f"legal_actions={legal_actions[:5]}{'...' if len(legal_actions) > 5 else ''}, "
                   f"num_legal={len(legal_actions)}")
 
-        # Store for next RL2 step (shape: batch,)
-        self.prev_actions = actions.squeeze(-1).squeeze(1)
-
-        # Initialize prev_rewards to zeros if not set yet
-        # (will be updated with actual rewards via update_rewards())
+        # Update RL2 state (clone to allow inplace updates later)
+        # Note: actions comes from inference_mode() so we need to clone
+        self.prev_actions = actions.squeeze(-1).squeeze(1).clone()
         if self.prev_rewards is None:
             self.prev_rewards = torch.zeros((batch_size,), device=self.device)
 
-        self.time_idx += 1
+        # ✅ FIX #4: Increment per-env time counters
+        self.time_idxs += 1
 
         return actions_np
 
     def update_rewards(self, rewards: np.ndarray):
         """
-        Update stored rewards for RL2 state.
+        ✅ FIX #3: Update stored rewards for RL2 state.
 
         Call this after stepping the environment to provide rewards
         for the next inference step.
@@ -229,7 +272,41 @@ class LocalPolicyRunner(PolicyRunner):
         Args:
             rewards: Rewards from environment, shape (batch_size,)
         """
-        self.prev_rewards = torch.from_numpy(rewards).float().to(self.device)
+        self.prev_rewards = torch.from_numpy(rewards).float().to(self.device, non_blocking=True)
+
+    def reset_hidden_state_for_dones(self, dones: np.ndarray):
+        """
+        ✅ FIX #2 + #4: Reset hidden state AND time indices for finished episodes.
+
+        This method handles episodic boundaries in vectorized environments by:
+        1. Resetting hidden states for finished envs (structure-aware)
+        2. Resetting RL2 state (prev_actions, prev_rewards)
+        3. Resetting per-env time counters
+
+        Args:
+            dones: Boolean array (batch_size,) indicating which envs finished
+        """
+        if not dones.any():
+            return
+
+        # FIX #2: Structure-aware hidden state reset
+        # AMAGO's reset_hidden_state() handles tensor/tuple/dict structures
+        if self.hidden_state is not None:
+            self.hidden_state = self.agent.traj_encoder.reset_hidden_state(
+                self.hidden_state,
+                dones  # Expects numpy array
+            )
+
+        # Reset RL2 state for done envs
+        done_mask = torch.from_numpy(dones).to(self.device)
+        if self.prev_actions is not None:
+            self.prev_actions[done_mask] = 0
+        if self.prev_rewards is not None:
+            self.prev_rewards[done_mask] = 0.0
+
+        # FIX #4: Reset per-env time counters
+        if self.time_idxs is not None:
+            self.time_idxs[done_mask] = 0
 
 
 class RandomPolicyRunner(PolicyRunner):
@@ -331,11 +408,18 @@ class SelfPlayRunner:
                 print(f"  Step {total_steps}: rewards=({rewards_p1[0]:.2f}, {rewards_p2[0]:.2f}), "
                       f"done={dones[0]}, battles_completed={battles_completed}")
 
-            # Update policy rewards for RL2 state (if they support it)
+            # ✅ FIX #3: Update policy rewards for RL2 state
             if hasattr(self.policy_p1, "update_rewards"):
                 self.policy_p1.update_rewards(rewards_p1)
             if hasattr(self.policy_p2, "update_rewards"):
                 self.policy_p2.update_rewards(rewards_p2)
+
+            # ✅ FIX #2 + #4: Reset hidden states + time counters for finished episodes
+            if dones.any():
+                if hasattr(self.policy_p1, "reset_hidden_state_for_dones"):
+                    self.policy_p1.reset_hidden_state_for_dones(dones)
+                if hasattr(self.policy_p2, "reset_hidden_state_for_dones"):
+                    self.policy_p2.reset_hidden_state_for_dones(dones)
 
             # Extract legal masks for next step
             masks_p1, masks_p2 = self.vec_env._extract_legal_masks()

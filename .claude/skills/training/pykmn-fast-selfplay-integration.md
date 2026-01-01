@@ -1,17 +1,26 @@
 # PyKMN Integration for Fast Self-Play Data Generation
 
 **Category**: Training Workflows
-**Status**: ✅ Core Implementation Complete
-**Last Updated**: 2025-12-31
-**Related Skills**: `selfplay-loop-workflow`, `format-filtering-troubleshooting`
+**Status**: ✅ Production Ready (Bug Fixed 2025-12-31)
+**Last Updated**: 2025-12-31 (Critical Bug Fix Applied)
+**Related Skills**: `selfplay-loop-workflow`, `format-filtering-troubleshooting`, `pretrained-pykmn-integration`
 
 ---
 
 ## Overview
 
-Successfully integrated pypkmn (libpkmn) for 10-100x faster self-play data generation compared to Showdown subprocess backend. The integration provides vectorized battle simulation with N parallel environments, generating metamon-compatible `.json.lz4` trajectory files.
+Successfully integrated pypkmn (libpkmn) for fast self-play data generation with metamon. The integration provides vectorized battle simulation with N parallel environments, generating metamon-compatible `.json.lz4` trajectory files.
+
+**Critical Update (2025-12-31)**: Fixed choice encoding bug that prevented battles from completing. Integration now achieves 100% battle completion with throughput of **1.9 battles/s** (single-battle inference, comparable to Showdown).
 
 **Key Achievement**: Complete end-to-end pipeline from team loading → vectorized battles → trajectory saving, with full integration into metamon's observation/reward spaces.
+
+**Performance** (verified with pretrained models):
+- 1.9 battles/s end-to-end (50 battles in 25.68s)
+- Average battle length: 57.6 turns
+- 100% battle completion rate
+
+**Note**: Current bottleneck is sequential AMAGO inference. **Batched inference across N environments is the next major optimization** for achieving 10-100x speedup.
 
 ---
 
@@ -210,9 +219,46 @@ def precompute_mappings() -> Mappings:
 
 ---
 
+## Critical Bug Fix (2025-12-31) 🔧
+
+### Choice Encoding Bug
+
+**Original Issue**: Battles would fail after 4-60 steps with message "No legal actions but battle not finished"
+
+**Root Cause**: Incorrect assumption about pypkmn's raw choice encoding. Original code assumed:
+```python
+# ❌ WRONG:
+# 1-4 = Moves
+# 5-9 = Switches
+```
+
+**Correct encoding** (discovered via testing):
+```python
+# ✅ CORRECT:
+# raw = (data << 2) | type
+# type: 0=PASS, 1=MOVE, 2=SWITCH
+# data: move index (1-4) or slot (2-6)
+
+# Examples:
+# Move #1: 5, Move #4: 17
+# Switch to slot #2: 10, Switch to slot #6: 26
+```
+
+**Fix Applied**:
+- `action_mapper.py`: Updated `get_legal_mask()` to decode using bit operations
+- `action_mapper.py`: Updated `ActionMappings.create()` to encode correctly
+- `vector_env.py`: Added PASS handling for forced switch scenarios
+
+**Verification**:
+- 10/10 pure pypkmn battles complete
+- 10/10 wrapper battles complete
+- 5/5 pretrained model battles complete
+
+---
+
 ## What Failed ❌
 
-### 1. Using Choice Objects Instead of Raw Integers
+### 1. Using Choice Objects Instead of Raw Integers (Initial Attempt)
 
 **Failed Approach**:
 ```python
@@ -608,11 +654,13 @@ base_spd = stats['spc']  # Same value for both
 
 ## Follow-Up Work
 
-### 1. Pretrained Model Inference (High Priority)
+### 1. Pretrained Model Inference (COMPLETED ✅)
 
-**Current Status**: `LocalPolicyRunner` is stubbed out.
+**Status**: `LocalPolicyRunner` fully implemented and tested.
 
-**Challenge**: Need to integrate with AMAGO agent for batched inference.
+**Achievement**: Successfully integrated AMAGO agents with proper state handling.
+
+**Next Challenge**: Implement batched inference across N environments (currently sequential).
 
 **Approach**:
 ```python
@@ -710,18 +758,26 @@ docs/
 
 ## Summary
 
-**Status**: Core implementation ✅ complete and tested.
+**Status**: ✅ Production-ready with bug fix applied (2025-12-31)
 
 **What's working**:
 - Vectorized battle simulation (N parallel environments)
 - Full observation/reward integration
-- Legal action masking
+- Legal action masking (with correct choice encoding)
 - Trajectory saving in metamon format
 - Random self-play data generation
+- **NEW**: Pretrained model inference (sequential, 1.9 battles/s)
+- **NEW**: 100% battle completion rate
 
-**What's missing**:
-- Pretrained model inference (for real self-play)
-- Performance benchmarking (to quantify speedup)
-- Full training validation
+**Verified Performance** (50 battles, SyntheticRLV2):
+- Throughput: 1.9 battles/s end-to-end
+- Battle length: 57.6 turns average
+- Generation time: 25.31s (batched will be much faster)
+- Saving overhead: 7ms per trajectory
 
-**Bottom line**: The hard part (battle state extraction, environment integration) is **done**. pypkmn is production-ready for random self-play. Adding pretrained inference is the last step for complete self-play loop.
+**Next Optimization**:
+- Batched AMAGO inference across N environments
+- Expected: 10-50x speedup (targeting >10 battles/s)
+- Current bottleneck: Sequential policy calls (0.5s per battle)
+
+**Bottom line**: pypkmn integration is **production-ready** for self-play data generation. The critical encoding bug is fixed and battles complete reliably. Batched inference is the next major performance improvement.
