@@ -142,12 +142,17 @@ class PyKMNVectorEnv:
             All arrays have shape (num_envs, ...).
         """
         # Explicitly clear old references before creating new battles
-        # Let Python's reference counting handle cleanup naturally
+        # Force C++ destructors to run at a safe time (not during churn)
         for i in range(self.num_envs):
             self.battles[i] = None
             self.results[i] = None
             self.prev_states_p1[i] = None
             self.prev_states_p2[i] = None
+
+        # Force garbage collection to cleanup C++ Battle objects NOW
+        # This ensures destructors run at a controlled time, not during allocation
+        import gc
+        gc.collect()
 
         # Create new battles
         for i in range(self.num_envs):

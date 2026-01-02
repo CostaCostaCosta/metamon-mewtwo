@@ -73,7 +73,8 @@ def run_chunk_subprocess(
         if value is True:
             cmd.append(f"--{key}")
         elif value is False:
-            cmd.append(f"--no_{key}")
+            # For False boolean flags, just skip them (don't add --no_* which doesn't exist)
+            continue
         elif value is not None:
             cmd.append(f"--{key}")
             cmd.append(str(value))
@@ -125,6 +126,19 @@ def run_chunk_subprocess(
             "time": elapsed,
             "error": str(e),
         }
+
+
+def _run_chunk_worker(args_tuple):
+    """Worker function for parallel execution (must be picklable)."""
+    chunk_idx, chunk_battles, base_args, max_retries, timeout = args_tuple
+    return run_with_retry(
+        chunk_idx=chunk_idx,
+        chunk_battles=chunk_battles,
+        base_args=base_args,
+        max_retries=max_retries,
+        timeout=timeout,
+        verbose=False,
+    )
 
 
 def run_with_retry(
@@ -230,6 +244,13 @@ def main():
         action="store_true",
         help="Save error logs for failed chunks",
     )
+    isolation_group.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="Number of parallel worker processes (default: 1). "
+        "Increase to 2-4 to utilize more GPU memory. Each worker loads the model (~2GB GPU memory).",
+    )
 
     # Performance arguments
     perf_group = parser.add_argument_group("Performance")
@@ -266,10 +287,13 @@ def main():
         "team_set": args.team_set,
         "team_dir": args.team_dir,
         "device": args.device,
-        "use_amp": args.use_amp,
         "temperature": args.temperature,
-        "verbose": False,  # Disable verbose in subprocesses
+        "quiet": True,  # Use --quiet flag to disable verbose in subprocesses
     }
+
+    # Add use_amp if True (it's the default, but be explicit)
+    if args.use_amp:
+        base_args["use_amp"] = True
 
     # Add model arguments
     if args.model:
@@ -290,56 +314,106 @@ def main():
         print(f"Batch size: {args.batch_size}")
         print(f"Chunk size: {chunk_size} battles/subprocess")
         print(f"Number of chunks: {num_chunks}")
+        print(f"Parallel workers: {args.num_workers}")
         print(f"Max retries: {args.max_retries}")
         print(f"Format: {args.format}")
         print(f"Output: {args.save_dir}")
+        if args.num_workers > 1:
+            print(f"\n⚡ Parallel mode: {args.num_workers} chunks will run simultaneously")
+            print(f"   Expected speedup: ~{args.num_workers}x (if GPU memory allows)")
         print("=" * 70)
         print()
 
-    # Run chunks
+    # Run chunks (parallel or sequential)
     total_start_time = time.time()
     total_completed = 0
     total_failed = 0
     failed_chunks = []
 
-    for chunk_idx in range(num_chunks):
-        chunk_battles = min(chunk_size, args.num_battles - chunk_idx * chunk_size)
+    if args.num_workers > 1:
+        # Parallel execution with multiprocessing
+        from multiprocessing import Pool
 
-        if verbose:
-            print(f"Chunk {chunk_idx+1}/{num_chunks} ({chunk_battles} battles)...")
+        # Prepare chunk arguments (tuples for worker function)
+        chunk_args = [
+            (
+                chunk_idx,
+                min(chunk_size, args.num_battles - chunk_idx * chunk_size),
+                base_args,
+                args.max_retries,
+                args.timeout,
+            )
+            for chunk_idx in range(num_chunks)
+        ]
 
-        result = run_with_retry(
-            chunk_idx=chunk_idx,
-            chunk_battles=chunk_battles,
-            base_args=base_args,
-            max_retries=args.max_retries,
-            timeout=args.timeout,
-            verbose=verbose,
-        )
+        # Run chunks in parallel using picklable worker function
+        with Pool(processes=args.num_workers) as pool:
+            results = pool.map(_run_chunk_worker, chunk_args)
 
-        if result["success"]:
-            total_completed += result["battles_completed"]
+        # Process results
+        for chunk_idx, result in enumerate(results):
+            chunk_battles = chunk_args[chunk_idx][1]
+
+            if result["success"]:
+                total_completed += result["battles_completed"]
+                if verbose:
+                    print(f"✓ Chunk {chunk_idx+1}/{num_chunks}: {result['battles_completed']} battles in {result['time']:.1f}s ({result['rate']:.1f} battles/sec)")
+            else:
+                total_failed += chunk_battles
+                failed_chunks.append((chunk_idx, result))
+                if verbose:
+                    print(f"❌ Chunk {chunk_idx+1}/{num_chunks}: Failed - {result.get('error', 'unknown')}")
+
+                # Save failed chunk info
+                if args.save_failed_chunks:
+                    failed_dir = Path(args.save_dir).expanduser() / "failed_chunks"
+                    failed_dir.mkdir(parents=True, exist_ok=True)
+                    with open(failed_dir / f"chunk_{chunk_idx:04d}_error.txt", "w") as f:
+                        f.write(f"Chunk {chunk_idx}\n")
+                        f.write(f"Battles: {chunk_battles}\n")
+                        f.write(f"Error: {result.get('error', 'unknown')}\n")
+                        f.write(f"\nStderr:\n{result.get('stderr', 'N/A')}\n")
+
+    else:
+        # Sequential execution (original behavior)
+        for chunk_idx in range(num_chunks):
+            chunk_battles = min(chunk_size, args.num_battles - chunk_idx * chunk_size)
+
             if verbose:
-                print(f"  ✓ Completed in {result['time']:.1f}s ({result['rate']:.1f} battles/sec)")
-        else:
-            total_failed += chunk_battles
-            failed_chunks.append((chunk_idx, result))
+                print(f"Chunk {chunk_idx+1}/{num_chunks} ({chunk_battles} battles)...")
+
+            result = run_with_retry(
+                chunk_idx=chunk_idx,
+                chunk_battles=chunk_battles,
+                base_args=base_args,
+                max_retries=args.max_retries,
+                timeout=args.timeout,
+                verbose=verbose,
+            )
+
+            if result["success"]:
+                total_completed += result["battles_completed"]
+                if verbose:
+                    print(f"  ✓ Completed in {result['time']:.1f}s ({result['rate']:.1f} battles/sec)")
+            else:
+                total_failed += chunk_battles
+                failed_chunks.append((chunk_idx, result))
+                if verbose:
+                    print(f"  ❌ Failed after {args.max_retries} attempts")
+                    print(f"     Error: {result.get('error', 'unknown')}")
+
+                # Save failed chunk info
+                if args.save_failed_chunks:
+                    failed_dir = Path(args.save_dir).expanduser() / "failed_chunks"
+                    failed_dir.mkdir(parents=True, exist_ok=True)
+                    with open(failed_dir / f"chunk_{chunk_idx:04d}_error.txt", "w") as f:
+                        f.write(f"Chunk {chunk_idx}\n")
+                        f.write(f"Battles: {chunk_battles}\n")
+                        f.write(f"Error: {result.get('error', 'unknown')}\n")
+                        f.write(f"\nStderr:\n{result.get('stderr', 'N/A')}\n")
+
             if verbose:
-                print(f"  ❌ Failed after {args.max_retries} attempts")
-                print(f"     Error: {result.get('error', 'unknown')}")
-
-            # Save failed chunk info
-            if args.save_failed_chunks:
-                failed_dir = Path(args.save_dir).expanduser() / "failed_chunks"
-                failed_dir.mkdir(parents=True, exist_ok=True)
-                with open(failed_dir / f"chunk_{chunk_idx:04d}_error.txt", "w") as f:
-                    f.write(f"Chunk {chunk_idx}\n")
-                    f.write(f"Battles: {chunk_battles}\n")
-                    f.write(f"Error: {result.get('error', 'unknown')}\n")
-                    f.write(f"\nStderr:\n{result.get('stderr', 'N/A')}\n")
-
-        if verbose:
-            print()
+                print()
 
     # Final statistics
     total_time = time.time() - total_start_time
