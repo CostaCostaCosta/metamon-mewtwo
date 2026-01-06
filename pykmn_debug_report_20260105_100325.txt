@@ -1,0 +1,78 @@
+PyKMN Debug Ladder Report
+======================================================================
+
+
+Mode 0: Single Battle Baseline
+----------------------------------------
+Status: FAILED
+Time: 0.1s
+
+Output:
+
+Errors:
+Traceback (most recent call last):
+  File "/home/eddie/repos/metamon/test_mode0_single_battle.py", line 17, in <module>
+    from pykmn.engine.gen1 import Battle, Player, Choice, MoveChoice, PassChoice, SwitchChoice
+ImportError: cannot import name 'MoveChoice' from 'pykmn.engine.gen1' (/home/eddie/repos/PyKMN/pykmn/engine/gen1.py)
+
+======================================================================
+
+Mode 1: Raw PyKMN Stepping
+----------------------------------------
+Status: FAILED
+Time: 0.1s
+
+Output:
+
+Errors:
+Traceback (most recent call last):
+  File "/home/eddie/repos/metamon/test_mode1_raw_stepping.py", line 21, in <module>
+    from pykmn.engine.gen1 import Battle, Player, Choice, MoveChoice, PassChoice, SwitchChoice
+ImportError: cannot import name 'MoveChoice' from 'pykmn.engine.gen1' (/home/eddie/repos/PyKMN/pykmn/engine/gen1.py)
+
+======================================================================
+
+Mode 2: NumPy Conversion
+----------------------------------------
+Status: FAILED
+Time: 0.1s
+
+Output:
+
+Errors:
+Traceback (most recent call last):
+  File "/home/eddie/repos/metamon/test_mode2_numpy_conversion.py", line 22, in <module>
+    from pykmn.engine.gen1 import Battle, Player, Choice, MoveChoice, PassChoice, SwitchChoice
+ImportError: cannot import name 'MoveChoice' from 'pykmn.engine.gen1' (/home/eddie/repos/PyKMN/pykmn/engine/gen1.py)
+
+======================================================================
+
+Mode 3: Torch Tensors
+----------------------------------------
+Status: FAILED
+Time: 1.3s
+
+Output:
+
+Errors:
+Traceback (most recent call last):
+  File "/home/eddie/repos/metamon/test_mode3_torch_tensors.py", line 22, in <module>
+    from pykmn.engine.gen1 import Battle, Player, Choice, MoveChoice, PassChoice, SwitchChoice
+ImportError: cannot import name 'MoveChoice' from 'pykmn.engine.gen1' (/home/eddie/repos/PyKMN/pykmn/engine/gen1.py)
+
+======================================================================
+
+Mode 4: Full Batched Pipeline
+----------------------------------------
+Status: FAILED
+Time: 0.7s
+
+Output:
+
+Errors:
+Traceback (most recent call last):
+  File "/home/eddie/repos/metamon/test_mode4_batched_pipeline.py", line 21, in <module>
+    from pykmn.engine.gen1 import Battle, Player, Choice, MoveChoice, PassChoice, SwitchChoice
+ImportError: cannot import name 'MoveChoice' from 'pykmn.engine.gen1' (/home/eddie/repos/PyKMN/pykmn/engine/gen1.py)
+
+======================================================================
