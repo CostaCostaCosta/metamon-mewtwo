@@ -8,7 +8,7 @@
 
 Implementation of a separate GPU inference server for metamon self-play data generation. The server runs the neural network on GPU while PyKMN battle simulation runs on CPU, completely separating concerns and avoiding memory corruption issues.
 
-**Key Result**: Achieved 33x throughput improvement (0.5 → 16.5 battles/sec) after fixing critical batching bugs.
+**Key Result**: GPU server can handle 257 battles/sec (batch_size=128), but actual throughput is only 6 battles/sec due to metamon wrapper overhead (see `pykmn-performance-bottleneck.md`).
 
 ## Architecture
 

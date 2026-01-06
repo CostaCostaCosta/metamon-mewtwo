@@ -184,10 +184,13 @@ class LocalPolicyRunner(PolicyRunner):
                                                           dtype=torch.float32, device=self.device)
 
         # Convert observations to torch (async GPU transfer)
-        obs_torch = {
-            k: torch.from_numpy(v).to(self.device, non_blocking=True)
-            for k, v in obs_dict.items()
-        }
+        # Skip text fields that cannot be converted to tensors
+        obs_torch = {}
+        for k, v in obs_dict.items():
+            # Skip string/text fields (e.g., "text", "text_raw")
+            if v.dtype.kind in ('U', 'S', 'O'):  # Unicode, bytes, or object dtypes
+                continue
+            obs_torch[k] = torch.from_numpy(v).to(self.device, non_blocking=True)
 
         # ✅ FIX #1: Legal action masking (already embedded in observations)
         # MetamonMaskedActor will apply mask internally via straight_from_obs["illegal_actions"]

@@ -137,13 +137,13 @@ class InferenceServer:
         # Run inference
         try:
             actions = self._run_inference(batch_requests)
-            print(f"DEBUG: _run_inference returned actions shape: {actions.shape}", flush=True)
+            # Actions shape verified
 
             # Send responses
             # If single request with batched data, return all actions
             if len(batch_requests) == 1 and actions.shape[0] > 1:
                 # Single batched request - return all actions
-                print(f"DEBUG: Returning batched response with {actions.shape[0]} actions", flush=True)
+                # Returning batched response
                 response = InferenceResponse(
                     actions=actions,
                     request_id=batch_requests[0].request_id
@@ -171,10 +171,7 @@ class InferenceServer:
         obs_list = [r.observations for r in requests]
         masks_list = [r.legal_masks for r in requests]
 
-        print(f"DEBUG _run_inference: num_requests={num_requests}, masks_list[0].shape={masks_list[0].shape}", flush=True)
-        for k, v in obs_list[0].items():
-            if isinstance(v, np.ndarray):
-                print(f"DEBUG _run_inference: obs['{k}'].shape={v.shape}", flush=True)
+        # Input shapes verified
 
         # Combine into batched tensors
         obs_batch = self._stack_observations(obs_list)
@@ -185,12 +182,12 @@ class InferenceServer:
             # Single request with multiple environments (batched)
             legal_mask_batch = masks_list[0]
             batch_size = legal_mask_batch.shape[0]
-            print(f"DEBUG: Detected batched request, batch_size={batch_size}", flush=True)
+            # Detected batched request
         else:
             # Multiple requests, each with single environment
             legal_mask_batch = np.stack(masks_list)
             batch_size = num_requests
-            print(f"DEBUG: Multiple single requests, batch_size={batch_size}", flush=True)
+            # Multiple single requests
 
         # Convert to torch tensors on GPU
         obs_torch = {}

@@ -114,7 +114,7 @@ class InferenceClient:
                 actions_b64 = result['actions']
                 actions_bytes = base64.b64decode(actions_b64)
                 actions = pickle.loads(actions_bytes)
-                print(f"DEBUG CLIENT: Received actions shape: {actions.shape}, dtype: {actions.dtype}", flush=True)
+                # Debug logging removed - actions shape verified
 
                 return actions
 

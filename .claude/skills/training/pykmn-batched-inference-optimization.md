@@ -1,13 +1,20 @@
 # PyKMN Batched AMAGO Inference Optimization
 
-**Category**: Training Workflows / Performance
-**Status**: ✅ Production Ready
+> **⚠️ NOTE: This approach is SUPERSEDED by the GPU Inference Server architecture for production use.**
+>
+> **For production deployments, use the GPU Inference Server instead:**
+> - See `gpu-inference-server-architecture.md` for the recommended approach
+> - The server completely separates PyKMN from GPU code, eliminating all memory corruption
+> - This document remains for reference on in-process batching techniques
+
+**Category**: Training Workflows / Performance (Historical)
+**Status**: ✅ Working but NOT RECOMMENDED for production
 **Last Updated**: 2025-12-31
-**Related Skills**: `pykmn-fast-selfplay-integration`, `pretrained-pykmn-integration`
+**Related Skills**: `gpu-inference-server-architecture` (RECOMMENDED), `pykmn-fast-selfplay-integration`
 
 ---
 
-## Overview
+## Overview (Historical Context)
 
 Successfully implemented batched AMAGO inference for PyKMN vectorized environments, achieving **10.9x end-to-end speedup** (1.9 → 20.8 battles/sec) on RTX 5090.
 

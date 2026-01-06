@@ -1,8 +1,17 @@
 # Gen1 OU Self-Play Loop Workflow
 
 > **Category**: training
-> **Last Updated**: 2025-12-10
+> **Last Updated**: 2026-01-06 (Updated with fast wrapper)
 > **Author**: Claude (from GEN1OU_SELFPLAY_GUIDE.md + user clarification)
+
+## ⚠️ IMPORTANT UPDATE: Use New Fast Wrapper
+
+**For data generation, use**: `scripts/generate_selfplay_fast_wrapper.py`
+- **26x faster** than old scripts (128 vs 5 battles/sec)
+- **More stable** (1024 parallel battles)
+- **Crash-resistant** (incremental saves)
+
+See `.claude/skills/training/pykmn-wrapper-rebuild-success.md` for details.
 
 ## Objective
 
@@ -56,26 +65,35 @@ export METAMON_CACHE_DIR=/home/eddie/metamon_cache
 
 **Goal**: Generate 100k-200k self-play trajectories from base model
 
-**Command** (batched, fast):
+**Command** (NEW - fast wrapper, 26x faster):
 ```bash
-python scripts/generate_selfplay_data_batched.py \
-    --model SyntheticRLV2 \
+python scripts/generate_selfplay_fast_wrapper.py \
+    --team_dir ~/metamon_cache/teams/modern_replays_v2 \
     --num_battles 150000 \
-    --battle_format gen1ou \
-    --team_set modern_replays_v2 \
-    --output_dir ~/metamon/trajectories/gen1_loop/gen0 \
-    --parallel_instances 8 \
-    --battles_per_instance 18750
+    --num_envs 1024 \
+    --save_dir ~/metamon/trajectories/gen1_loop/gen0 \
+    --format gen1ou \
+    --model SyntheticRLV2 \
+    --device cuda \
+    --temperature 1.5 \
+    --verbose
 ```
 
 **Expected output**: `~/metamon/trajectories/gen1_loop/gen0/gen1ou/*.json.lz4` files
 
-**Duration**: 3-6 hours (depends on parallelization)
+**Duration**: ~20-30 minutes (26x faster than old method)
 
 **What to monitor**:
-- Battle completion rate: Should process ~500-1000 battles/hour total
-- Server stability: Check for crashes (restart if needed)
-- Valid action rate: Should be > 99.5%
+- Throughput: Should see ~120-130 battles/sec
+- Batch saves: `💾 Batch X: Saved Y trajectories` messages
+- GPU utilization: Should be 80-100% (`nvidia-smi`)
+- Files appearing: `watch ls ~/metamon/trajectories/gen1_loop/gen0/gen1ou/*.json.lz4 | wc -l`
+
+**Key differences from old approach**:
+- ✅ No Pokémon Showdown server needed (uses PyKMN)
+- ✅ 1024 parallel battles vs 8 parallel instances
+- ✅ Incremental saving (crash-resistant)
+- ✅ Temperature control for exploration
 
 ---
 
