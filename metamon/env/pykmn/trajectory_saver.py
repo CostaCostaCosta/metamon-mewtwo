@@ -22,6 +22,7 @@ def save_trajectories(
     mappings: Mappings,
     battle_format: str = "gen1ou",
     verbose: bool = False,
+    start_id: int = 0,
 ):
     """
     Save trajectories to .json.lz4 files in metamon format.
@@ -32,12 +33,12 @@ def save_trajectories(
         mappings: Precomputed mappings for feature conversion
         battle_format: Battle format string (e.g., "gen1ou")
         verbose: Whether to print progress
+        start_id: Starting battle ID for filename generation (default: 0)
 
     Output format:
         output_dir/
             {battle_format}/
-                {uuid}_pypkmn.json.lz4
-                {uuid}_pypkmn.json.lz4
+                metamon-{format}-{id}_Unrated_PyKMN_P1_vs_PyKMN_P2_{date}_{result}.json.lz4
                 ...
 
     Each .json.lz4 file contains a battle replay in the format:
@@ -58,9 +59,17 @@ def save_trajectories(
             # Convert trajectory to metamon format
             replay_data = _trajectory_to_replay(trajectory, mappings, battle_format)
 
-            # Generate unique filename
-            replay_id = str(uuid.uuid4())[:8]
-            filename = f"{replay_id}_pypkmn.json.lz4"
+            # Generate training-compatible filename
+            battle_id = f"metamon-{battle_format}-{start_id + i:06d}"
+            rating = "Unrated"
+            p1 = "PyKMNP1"  # No underscore!
+            p2 = "PyKMNP2"  # No underscore!
+            date = datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
+
+            # Winner from P1's perspective
+            result = "WIN" if trajectory.winner == 1 else "LOSS"
+
+            filename = f"{battle_id}_{rating}_{p1}_vs_{p2}_{date}_{result}.json.lz4"
             filepath = format_dir / filename
 
             # Save as compressed JSON
@@ -96,14 +105,15 @@ def _trajectory_to_replay(
 
     Returns:
         Dictionary representing a ParsedReplay in metamon format.
+        Format matches what parsed_replay_dset.py expects:
+        - "states": list of UniversalState dicts (from P1 perspective)
+        - "actions": list of action indices (P1's actions)
+        - "rewards": list of rewards (P1's rewards)
     """
-    # Convert features to UniversalState for each transition
-    states_p1 = []
-    states_p2 = []
-    actions_p1 = []
-    actions_p2 = []
-    rewards_p1 = []
-    rewards_p2 = []
+    # Convert features to UniversalState for each transition (P1 perspective only)
+    states = []
+    actions = []
+    rewards = []
 
     for transition in trajectory.transitions:
         # Convert P1 features to UniversalState
@@ -112,37 +122,23 @@ def _trajectory_to_replay(
             mappings,
             battle_format,
         )
-        states_p1.append(_universal_state_to_dict(state_p1))
+        states.append(_universal_state_to_dict(state_p1))
+        actions.append(transition.action_p1)
+        rewards.append(transition.reward_p1)
 
-        # Convert P2 features to UniversalState
-        state_p2 = features_to_universal_state(
-            transition.features_p2,
-            mappings,
-            battle_format,
-        )
-        states_p2.append(_universal_state_to_dict(state_p2))
+    # Add final action (for terminal state)
+    actions.append(actions[-1] if actions else 0)
 
-        # Store actions and rewards
-        actions_p1.append(transition.action_p1)
-        actions_p2.append(transition.action_p2)
-        rewards_p1.append(transition.reward_p1)
-        rewards_p2.append(transition.reward_p2)
-
-    # Build replay data structure
+    # Build replay data structure (matches ParsedReplay format)
     replay_data = {
         "format": battle_format,
+        "states": states,  # Single perspective (P1)
+        "actions": actions,  # P1's actions
+        "rewards": rewards,  # P1's rewards
         "winner": trajectory.winner,
         "num_turns": len(trajectory.transitions),
         "timestamp": datetime.now().isoformat(),
         "source": "pypkmn",
-        # P1 perspective
-        "states_p1": states_p1,
-        "actions_p1": actions_p1,
-        "rewards_p1": rewards_p1,
-        # P2 perspective
-        "states_p2": states_p2,
-        "actions_p2": actions_p2,
-        "rewards_p2": rewards_p2,
     }
 
     return replay_data
