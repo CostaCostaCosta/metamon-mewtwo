@@ -614,8 +614,20 @@ class MetamonAMAGODataset(RLDataset):
         return f"Metamon Replay Dataset ({self.dset_name})"
 
     def sample_random_trajectory(self) -> RLData:
-        data = self.parsed_replay_dset.random_sample()
-        return self._process_data(data)
+        # Retry up to 10 times if we hit a corrupted trajectory
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                data = self.parsed_replay_dset.random_sample()
+                return self._process_data(data)
+            except Exception as e:
+                # Catch ANY exception (ValueError, RuntimeError, KeyError, TypeError, etc.)
+                if attempt == max_retries - 1:
+                    raise RuntimeError(f"Failed to load valid trajectory after {max_retries} attempts. Last error: {type(e).__name__}: {e}") from e
+                # Try another random trajectory
+                continue
+        # Should never reach here
+        raise RuntimeError("Unexpected error in sample_random_trajectory")
 
     def _process_data(self, data):
         obs, action_infos, rewards, dones = data

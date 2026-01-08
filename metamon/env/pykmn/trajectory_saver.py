@@ -27,6 +27,9 @@ def save_trajectories(
     """
     Save trajectories to .json.lz4 files in metamon format.
 
+    IMPORTANT: This function saves BOTH player perspectives for each battle,
+    creating 2 files per battle for balanced win/loss data.
+
     Args:
         trajectories: List of Trajectory objects from pypkmn battles
         output_dir: Directory to save trajectory files
@@ -38,103 +41,159 @@ def save_trajectories(
     Output format:
         output_dir/
             {battle_format}/
-                metamon-{format}-{id}_Unrated_PyKMN_P1_vs_PyKMN_P2_{date}_{result}.json.lz4
+                metamon-{format}-{id}_Unrated_PyKMNP1_vs_PyKMNP2_{date}_{result}_P1.json.lz4
+                metamon-{format}-{id}_Unrated_PyKMNP1_vs_PyKMNP2_{date}_{result}_P2.json.lz4
                 ...
 
-    Each .json.lz4 file contains a battle replay in the format:
+    Each .json.lz4 file contains a single-perspective battle replay:
         {
-            "states": [...],  # List of UniversalState dicts
-            "actions_p1": [...],  # List of action indices
-            "actions_p2": [...],
+            "states": [...],  # List of UniversalState dicts (from one player's view)
+            "actions": [...],  # List of action indices (from that player's view)
+            "rewards": [...],  # List of rewards (from that player's view)
             "winner": 1 or 2,
             "metadata": {...}
         }
+
+    Note: Saving both perspectives doubles the dataset size but ensures balanced
+          win/loss distribution for self-play training.
     """
     output_dir = Path(output_dir).expanduser()
     format_dir = output_dir / battle_format
     format_dir.mkdir(parents=True, exist_ok=True)
 
+    total_saved = 0
+
     for i, trajectory in enumerate(trajectories):
         try:
-            # Convert trajectory to metamon format
-            replay_data = _trajectory_to_replay(trajectory, mappings, battle_format)
+            # Save P1 perspective
+            replay_data_p1 = _trajectory_to_replay(trajectory, mappings, battle_format, player=1)
+            _save_single_replay(
+                replay_data_p1,
+                format_dir,
+                battle_format,
+                start_id + i,
+                trajectory.winner,
+                player_perspective=1,
+            )
+            total_saved += 1
 
-            # Generate training-compatible filename
-            battle_id = f"metamon-{battle_format}-{start_id + i:06d}"
-            rating = "Unrated"
-            p1 = "PyKMNP1"  # No underscore!
-            p2 = "PyKMNP2"  # No underscore!
-            date = datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
-
-            # Winner from P1's perspective
-            result = "WIN" if trajectory.winner == 1 else "LOSS"
-
-            filename = f"{battle_id}_{rating}_{p1}_vs_{p2}_{date}_{result}.json.lz4"
-            filepath = format_dir / filename
-
-            # Save as compressed JSON
-            json_str = json.dumps(replay_data)
-            compressed = lz4.frame.compress(json_str.encode("utf-8"))
-
-            with open(filepath, "wb") as f:
-                f.write(compressed)
+            # Save P2 perspective
+            replay_data_p2 = _trajectory_to_replay(trajectory, mappings, battle_format, player=2)
+            _save_single_replay(
+                replay_data_p2,
+                format_dir,
+                battle_format,
+                start_id + i,
+                trajectory.winner,
+                player_perspective=2,
+            )
+            total_saved += 1
 
             if verbose and (i + 1) % 100 == 0:
-                print(f"Saved {i + 1}/{len(trajectories)} trajectories")
+                print(f"Saved {i + 1}/{len(trajectories)} battles ({total_saved} files)")
 
         except Exception as e:
             print(f"Error saving trajectory {i}: {e}")
             continue
 
     if verbose:
-        print(f"Saved {len(trajectories)} trajectories to {format_dir}")
+        print(f"Saved {total_saved} files from {len(trajectories)} battles to {format_dir}")
+
+
+def _save_single_replay(
+    replay_data: Dict[str, Any],
+    format_dir: Path,
+    battle_format: str,
+    battle_id: int,
+    winner: int,
+    player_perspective: int,
+):
+    """
+    Save a single replay file to disk.
+
+    Args:
+        replay_data: Replay data dictionary
+        format_dir: Directory to save to
+        battle_format: Battle format string
+        battle_id: Battle ID number
+        winner: Winner (1 or 2)
+        player_perspective: Which player's perspective (1 or 2)
+    """
+    # Generate filename
+    battle_id_str = f"metamon-{battle_format}-{battle_id:06d}"
+    rating = "Unrated"
+    p1 = "PyKMNP1"
+    p2 = "PyKMNP2"
+    date = datetime.now().strftime("%m-%d-%Y-%H:%M:%S")
+
+    # Result from this player's perspective
+    result = "WIN" if winner == player_perspective else "LOSS"
+
+    # Add player suffix to distinguish perspectives
+    filename = f"{battle_id_str}_{rating}_{p1}_vs_{p2}_{date}_{result}_P{player_perspective}.json.lz4"
+    filepath = format_dir / filename
+
+    # Save as compressed JSON
+    json_str = json.dumps(replay_data)
+    compressed = lz4.frame.compress(json_str.encode("utf-8"))
+
+    with open(filepath, "wb") as f:
+        f.write(compressed)
 
 
 def _trajectory_to_replay(
     trajectory: Trajectory,
     mappings: Mappings,
     battle_format: str,
+    player: int = 1,
 ) -> Dict[str, Any]:
     """
-    Convert Trajectory to metamon ParsedReplay format.
+    Convert Trajectory to metamon ParsedReplay format from a player's perspective.
 
     Args:
         trajectory: Trajectory object from pypkmn battle
         mappings: Precomputed mappings
         battle_format: Battle format string
+        player: Which player's perspective (1 or 2)
 
     Returns:
         Dictionary representing a ParsedReplay in metamon format.
         Format matches what parsed_replay_dset.py expects:
-        - "states": list of UniversalState dicts (from P1 perspective)
-        - "actions": list of action indices (P1's actions)
-        - "rewards": list of rewards (P1's rewards)
+        - "states": list of UniversalState dicts (from specified player's perspective)
+        - "actions": list of action indices (from specified player's perspective)
+        - "rewards": list of rewards (from specified player's perspective)
     """
-    # Convert features to UniversalState for each transition (P1 perspective only)
     states = []
     actions = []
     rewards = []
 
     for transition in trajectory.transitions:
-        # Convert P1 features to UniversalState
-        state_p1 = features_to_universal_state(
-            transition.features_p1,
+        # Select features based on player perspective
+        if player == 1:
+            features = transition.features_p1
+            action = transition.action_p1
+            reward = transition.reward_p1
+        else:  # player == 2
+            features = transition.features_p2
+            action = transition.action_p2
+            reward = transition.reward_p2
+
+        # Convert features to UniversalState
+        state = features_to_universal_state(
+            features,
             mappings,
             battle_format,
         )
-        states.append(_universal_state_to_dict(state_p1))
-        actions.append(transition.action_p1)
-        rewards.append(transition.reward_p1)
-
-    # Add final action (for terminal state)
-    actions.append(actions[-1] if actions else 0)
+        states.append(_universal_state_to_dict(state))
+        actions.append(action)
+        rewards.append(reward)
 
     # Build replay data structure (matches ParsedReplay format)
     replay_data = {
         "format": battle_format,
-        "states": states,  # Single perspective (P1)
-        "actions": actions,  # P1's actions
-        "rewards": rewards,  # P1's rewards
+        "states": states,
+        "actions": actions,
+        "rewards": rewards,
         "winner": trajectory.winner,
         "num_turns": len(trajectory.transitions),
         "timestamp": datetime.now().isoformat(),

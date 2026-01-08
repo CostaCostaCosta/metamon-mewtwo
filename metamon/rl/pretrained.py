@@ -1596,7 +1596,7 @@ class EMASlow09999_EMA_E4(EMACheckpointModel):
 class SleepLoop5Controller_Epoch2(LocalPretrainedModel):
     """
     Gen1 OU specialist trained with aggressive sleep reward function.
-    Controller v1 config with tight KL control for stable self-play 
+    Controller v1 config with tight KL control for stable self-play
     finetuning.
     """
     def __init__(self):
@@ -1611,4 +1611,62 @@ class SleepLoop5Controller_Epoch2(LocalPretrainedModel):
             reward_function=get_reward_function("AggressiveShapedRewardSleep"),
             default_checkpoint=2,
             battle_backend="poke-env",  # Match training environment
+        )
+
+
+@pretrained_model("kakuna_beta")
+class KakunaBeta(LocalPretrainedModel):
+    """
+    Kakuna loop1y training run - Epoch 0
+
+    Finetuned from base Kakuna on kakuna-wrapper1-1shot dataset.
+    Uses kakuna.gin config with AggressiveShapedReward.
+    Training failed after epoch 1 due to data issues.
+    """
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/home/eddie/metamon/models/kakuna_loop1",
+            model_name="kakuna_loop1y",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            action_space=get_action_space("DefaultActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            default_checkpoint=0,
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model("VenonatE2")
+class VenonatE2(LocalPretrainedModel):
+    """
+    Venonat training run - Epoch 2
+
+    Finetuned from base Kakuna on kakuna-v2 dataset.
+    Uses kakuna.gin config with AggressiveShapedReward.
+    Gen1 OU specialist trained on self-play data.
+    """
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/home/eddie/metamon/models/kakuna_loop1",
+            model_name="venonat_01",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            action_space=get_action_space("DefaultActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            default_checkpoint=2,
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
         )
