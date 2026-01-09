@@ -208,7 +208,10 @@ def pykmn_to_features_raw(
         try:
             species = battle.species(player, slot)
             species_id = mappings.species_name_to_id.get(species, 0)
-            if species_id != 0:  # Pokemon exists
+
+            # BUGFIX: PyKMN does not clear the original slot when a Pokemon becomes active.
+            # We must skip the slot if it contains the currently active Pokemon to avoid duplicates.
+            if species_id != 0 and species != active_species:  # Exclude active Pokemon
                 team_species_ids[i] = species_id
 
                 current_hp = battle.current_hp(player, slot)

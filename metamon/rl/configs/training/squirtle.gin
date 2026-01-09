@@ -1,0 +1,152 @@
+# ==============================================
+# sleep_selfplay_v3_mid.gin
+# "Middle path" finetune for 1M trajectories
+#
+# Goals:
+#   - Avoid kakuna_gin-style actor collapse (too much step size / reward scaling)
+#   - Avoid controller_gin being overly stiff (too small LR + too little learning signal)
+#   - Keep Ataraxos-style dynamic damping (NO EMA / test-time compute in this run)
+#   - Assume self-play sampling temperature has already been increased externally
+#
+# Philosophy:
+#   - Keep reward scaling moderate (not 10, not 0.05)
+#   - Keep leaky-relu filtered BC (kakuna) but reduce DPG mix
+#   - Use dynamic damping with a slightly looser KL target than controller_v1
+#   - Use sane LR (1e-4 base) but allow controller to brake if KL spikes
+#   - Uses AggressiveShapedReward (+200/0 win/loss, no sleep bonus)
+# ==============================================
+
+import amago.agent
+
+# -------------------------
+# Reward scaling (moderate)
+# -------------------------
+# kakuna_gin used 10.0 and collapsed; controller used 0.05 and learned slowly.
+# Pick a middle value that preserves signal without making critic errors catastrophic.
+agent.Agent.reward_multiplier = 1.0
+agent.MultiTaskAgent.reward_multiplier = 1.0
+
+# -------------------------
+# Soft target update (tau)
+# -------------------------
+# kakuna_gin: 0.008, controller: 0.004
+# Keep kakuna's slightly faster target tracking, but not crazy.
+agent.Agent.tau = 0.006
+agent.MultiTaskAgent.tau = 0.006
+
+# -----------------------------------------
+# Action sampling for value / actor losses
+# -----------------------------------------
+# Keep kakuna's idea but slightly reduce multitask sampling to limit variance.
+agent.Agent.num_actions_for_value_in_critic_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_critic_loss = 3
+
+agent.Agent.num_actions_for_value_in_actor_loss = 1
+agent.MultiTaskAgent.num_actions_for_value_in_actor_loss = 3
+
+# -------------------------
+# Data mix: FBC + DPG (mid)
+# -------------------------
+# kakuna: online 0.1 (MT 0.25) with offline 1.0 → can drift hard early.
+# controller: online 0.05, offline 0.85 → safe but slow.
+#
+# Here: keep offline strong, but allow a modest DPG signal.
+agent.Agent.online_coeff = 0.06
+agent.MultiTaskAgent.online_coeff = 0.10
+
+agent.Agent.offline_coeff = 1.0
+agent.MultiTaskAgent.offline_coeff = 1.0
+
+# -------------------------
+# Filtered BC: leaky relu
+# -------------------------
+# Keep kakuna filter (smoother than binary thresholding), but tighten bounds a bit.
+agent.Agent.fbc_filter_func = @agent.leaky_relu_filter
+agent.MultiTaskAgent.fbc_filter_func = @agent.leaky_relu_filter
+
+# Filter tuning:
+# - beta controls how sharply weights rise with advantage
+# - tau affects smoothing/temperature of advantage normalization (implementation-dependent)
+# - neg_slope keeps some gradient on "bad" samples without zeroing
+# - clip high prevents huge weights from a few outlier states dominating
+agent.leaky_relu_filter.beta = 0.25          # kakuna 0.3 → slightly less aggressive
+agent.leaky_relu_filter.tau = 2e-3           # kakuna 1e-3 → a touch smoother
+agent.leaky_relu_filter.neg_slope = 0.05     # keep
+agent.leaky_relu_filter.clip_weights_low = 1e-3
+agent.leaky_relu_filter.clip_weights_high = 8.0   # kakuna 15.0 → reduce outlier dominance
+
+# ============================================
+# Optimizer / Experiment-level hyperparameters
+# ============================================
+
+# Regularization
+MetamonAMAGOExperiment.l2_coeff = 1e-4
+
+# LR + warmup
+# Keep kakuna's 1e-4 (fast enough), but rely on dynamic damping to brake on KL spikes.
+MetamonAMAGOExperiment.learning_rate = 1e-4
+MetamonAMAGOExperiment.lr_warmup_steps = 10000
+
+# Gradient safety
+MetamonAMAGOExperiment.grad_clip = 0.6     # kakuna 1.0, controller 0.3
+
+# Critic weighting
+# kakuna 12.5 can overwhelm early (especially with large reward_multiplier).
+# controller 1.5 is often too weak to stabilize quickly.
+MetamonAMAGOExperiment.critic_loss_weight = 6.0
+
+# Stability
+MetamonAMAGOExperiment.dloader_workers = 0  # keep (avoid multiprocessing crashes)
+
+# ============================================
+# Dynamic Damping (Ataraxos-style controller)
+# ============================================
+MetamonAMAGOExperiment.use_dynamic_damping = True
+
+# KL target: controller was 0.008 and "too conservative"; loosen slightly.
+MetamonAMAGOExperiment.target_kl_per_step = 0.010
+MetamonAMAGOExperiment.kl_tolerance       = 1.20    # wider band than 1.1
+
+# Start moderately stiff, allow controller to go higher if needed
+MetamonAMAGOExperiment.kl_coef_init = 0.7           # between 0.6 and 1.0
+MetamonAMAGOExperiment.kl_coef_max  = 1.4
+
+# Check fairly frequently
+MetamonAMAGOExperiment.dd_adapt_interval = 10
+
+# Braking/regrowth: still firm, but less "handbrake turn" than controller_v1
+MetamonAMAGOExperiment.kl_coef_growth_factor = 1.6
+MetamonAMAGOExperiment.lr_shrink_factor      = 0.45
+MetamonAMAGOExperiment.lr_grow_factor        = 1.04
+MetamonAMAGOExperiment.kl_coef_decay_factor  = 0.975
+
+# Only controller adaptation (no extra schedule)
+MetamonAMAGOExperiment.kl_power_alpha    = 0.0
+MetamonAMAGOExperiment.kl_schedule_steps = 1_000_000
+
+# ============================================
+# Entropy schedule (keep mild exploration)
+# ============================================
+# Keep these modest; you already increased self-play sampling temperature externally.
+MetamonAMAGOExperiment.ent_coef_init = 0.015
+MetamonAMAGOExperiment.ent_coef_min  = 0.003
+MetamonAMAGOExperiment.ent_power_alpha = 0.3
+MetamonAMAGOExperiment.ent_schedule_steps = 1_000_000
+
+# ============================================
+# Expected behavior / red flags
+# ============================================
+# What you should see if it's working:
+# - Early training: KL starts above target, controller increases kl_coef and shrinks LR
+# - Actor does NOT go to 0% vs previous checkpoint after epoch 1
+# - FBC effective weight distribution shouldn't be extremely spiky (cap=8 helps)
+# - Critic loss should drop fast enough that DPG doesn't run ahead of calibration
+#
+# Red flags:
+# - KL pinned high (> ~0.013) + frequent LR shrinks => reduce online_coeff (0.06 → 0.03)
+# - Actor collapse still happens => set online_coeff = 0.0 for first ~20–30% steps
+# - Very slow improvement + KL always below band => raise learning_rate slightly or lower kl_coef_init
+#
+# Extra "safety knob" without new mechanisms:
+# - Drop critic_loss_weight to 4.0 if critic dominates and actor learns sluggishly
+# - Raise to 8.0 if value error is clearly causing instability

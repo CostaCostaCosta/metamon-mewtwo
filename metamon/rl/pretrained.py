@@ -1643,10 +1643,10 @@ class KakunaBeta(LocalPretrainedModel):
         )
 
 
-@pretrained_model("VenonatE2")
-class VenonatE2(LocalPretrainedModel):
+@pretrained_model("SquirtleE0")
+class SquirtleE0(LocalPretrainedModel):
     """
-    Venonat training run - Epoch 2
+    Squirtle training run - Epoch 0
 
     Finetuned from base Kakuna on kakuna-v2 dataset.
     Uses kakuna.gin config with AggressiveShapedReward.
@@ -1655,7 +1655,65 @@ class VenonatE2(LocalPretrainedModel):
     def __init__(self):
         super().__init__(
             amago_ckpt_dir="/home/eddie/metamon/models/kakuna_loop1",
-            model_name="venonat_01",
+            model_name="squirtle",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            action_space=get_action_space("DefaultActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            default_checkpoint=0,
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model("SquirtleE1")
+class SquirtleE1(LocalPretrainedModel):
+    """
+    Squirtle training run - Epoch 1
+
+    Finetuned from base Kakuna on kakuna-v2 dataset.
+    Uses kakuna.gin config with AggressiveShapedReward.
+    Gen1 OU specialist trained on self-play data.
+    """
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/home/eddie/metamon/models/kakuna_loop1",
+            model_name="squirtle",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            action_space=get_action_space("DefaultActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            default_checkpoint=1,
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model("SquirtleE2")
+class SquirtleE2(LocalPretrainedModel):
+    """
+    Squirtle training run - Epoch 2
+
+    Finetuned from base Kakuna on kakuna-v2 dataset.
+    Uses kakuna.gin config with AggressiveShapedReward.
+    Gen1 OU specialist trained on self-play data.
+    """
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/home/eddie/metamon/models/kakuna_loop1",
+            model_name="squirtle",
             model_gin_config="superkazam.gin",
             train_gin_config="kakuna.gin",
             tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
@@ -1663,6 +1721,96 @@ class VenonatE2(LocalPretrainedModel):
             action_space=get_action_space("DefaultActionSpace"),
             reward_function=get_reward_function("AggressiveShapedReward"),
             default_checkpoint=2,
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model("SquirtleE3")
+class SquirtleE3(LocalPretrainedModel):
+    """
+    Squirtle training run - Epoch 3
+
+    Finetuned from base Kakuna on kakuna-v2 dataset.
+    Uses kakuna.gin config with AggressiveShapedReward.
+    Gen1 OU specialist trained on self-play data.
+    Average Return: 201.09
+    """
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/home/eddie/metamon/models/kakuna_loop1",
+            model_name="squirtle",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            action_space=get_action_space("DefaultActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            default_checkpoint=3,
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model("SquirtleE4")
+class SquirtleE4(LocalPretrainedModel):
+    """
+    Squirtle training run - Epoch 4
+
+    Finetuned from base Kakuna on kakuna-v2 dataset.
+    Uses kakuna.gin config with AggressiveShapedReward.
+    Gen1 OU specialist trained on self-play data.
+    Average Return: 199.31
+    """
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/home/eddie/metamon/models/kakuna_loop1",
+            model_name="squirtle",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            action_space=get_action_space("DefaultActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            default_checkpoint=4,
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model("SquirtleE5")
+class SquirtleE5(LocalPretrainedModel):
+    """
+    Squirtle training run - Epoch 5
+
+    Finetuned from base Kakuna on kakuna-v2 dataset.
+    Uses kakuna.gin config with AggressiveShapedReward.
+    Gen1 OU specialist trained on self-play data.
+    Average Return: 191.65
+    """
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir="/home/eddie/metamon/models/kakuna_loop1",
+            model_name="squirtle",
+            model_gin_config="superkazam.gin",
+            train_gin_config="kakuna.gin",
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+            action_space=get_action_space("DefaultActionSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            default_checkpoint=5,
             battle_backend="metamon",
             gin_overrides={
                 "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(

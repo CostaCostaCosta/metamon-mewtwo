@@ -57,6 +57,7 @@ class TrajectoryParser:
         Parse metadata from filename.
 
         Format: {battle_id}_{rating}_{player}_vs_{opponent}_{date}_{result}.json.lz4
+        PyKMN Format: {battle_id}_{rating}_{player}_vs_{opponent}_{date}_{result}_P{1|2}.json.lz4
         """
         try:
             name_without_ext = filename.replace('.json.lz4', '').replace('.json', '')
@@ -72,6 +73,16 @@ class TrajectoryParser:
             opponent_name = parts[4]
             date_str = parts[5]
             result = parts[6]
+
+            # Check for pykmn perspective suffix (_P1 or _P2)
+            # Only apply for files that start with "metamon-" or "pykmn-"
+            is_pykmn_file = battle_id.startswith('metamon-') or battle_id.startswith('pykmn-')
+            if is_pykmn_file and len(parts) >= 8 and parts[7] in ['P1', 'P2']:
+                perspective = parts[7]
+                # For P2 perspective, swap player and opponent names
+                # since pykmn files always list P1 vs P2 regardless of perspective
+                if perspective == 'P2':
+                    player_name, opponent_name = opponent_name, player_name
 
             # Parse rating
             try:
