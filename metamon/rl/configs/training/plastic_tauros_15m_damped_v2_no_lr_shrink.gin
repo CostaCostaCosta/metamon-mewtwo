@@ -1,0 +1,9 @@
+# Small-damped-v2 no-LR-shrink ablation.
+# Keeps KL, entropy, and ratio damping active while pinning the LR multiplier.
+
+include 'metamon/rl/configs/training/plastic_tauros_15m_damped_v2.gin'
+
+MetamonAMAGOExperiment.lr_shrink_factor = 1.0
+MetamonAMAGOExperiment.lr_grow_factor = 1.0
+MetamonAMAGOExperiment.lr_multiplier_min = 1.0
+MetamonAMAGOExperiment.lr_multiplier_max = 1.0

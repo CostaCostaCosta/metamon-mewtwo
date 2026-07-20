@@ -1,0 +1,11 @@
+# Small-control: 15M grouped Tauros-style architecture with the current
+# Gen1OU filtered-BC/offline-RL recipe. Use with
+# smaller_multitaskagent_grouped_v2_arch.gin.
+
+include 'metamon/rl/configs/training/alakazam3_isfilter.gin'
+
+MetamonAMAGOExperiment.use_dynamic_damping = False
+MetamonAMAGOExperiment.use_ema = False
+MetamonAMAGOExperiment.log_policy_health_metrics = True
+MetamonAMAGOExperiment.lr_decay_steps = 0
+MetamonAMAGOExperiment.grad_clip_final = None

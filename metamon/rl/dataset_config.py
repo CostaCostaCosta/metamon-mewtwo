@@ -64,6 +64,7 @@ class DatasetConfig:
     prev_weight: Optional[float] = None
     anneal_epochs: Optional[int] = None
     formats: Optional[list[str]] = None
+    belief_target_type: Optional[str] = None
 
 
 @dataclass
@@ -84,6 +85,7 @@ class ResolvedDatasetConfig:
     entries: list[_ResolvedEntry]
     anneal_epochs: Optional[int]
     formats: Optional[list[str]]
+    belief_target_type: Optional[str]
 
 
 def _resolve_config_path(path: str) -> str:
@@ -121,6 +123,7 @@ def load_dataset_config(path: str) -> DatasetConfig:
         prev_weight=raw.get("prev_weight"),
         anneal_epochs=raw.get("anneal_epochs"),
         formats=raw.get("formats"),
+        belief_target_type=raw.get("belief_target_type"),
     )
 
 
@@ -141,6 +144,8 @@ def save_dataset_config(config: DatasetConfig, path: str) -> None:
         data["anneal_epochs"] = config.anneal_epochs
     if config.formats is not None:
         data["formats"] = config.formats
+    if config.belief_target_type is not None:
+        data["belief_target_type"] = config.belief_target_type
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -164,6 +169,7 @@ def resolve_dataset_config(config: DatasetConfig) -> ResolvedDatasetConfig:
     """
     entries: list[_ResolvedEntry] = []
     resolved_formats = config.formats
+    resolved_belief_target_type = config.belief_target_type
 
     if config.prev_dataset is not None:
         assert (
@@ -174,6 +180,8 @@ def resolve_dataset_config(config: DatasetConfig) -> ResolvedDatasetConfig:
 
         if resolved_formats is None:
             resolved_formats = prev_resolved.formats
+        if resolved_belief_target_type is None:
+            resolved_belief_target_type = prev_resolved.belief_target_type
 
         prev_entries = prev_resolved.entries
         total_prev = sum(e.weight for e in prev_entries)
@@ -226,6 +234,7 @@ def resolve_dataset_config(config: DatasetConfig) -> ResolvedDatasetConfig:
         entries=entries,
         anneal_epochs=config.anneal_epochs,
         formats=resolved_formats,
+        belief_target_type=resolved_belief_target_type,
     )
 
 
@@ -254,6 +263,7 @@ def flatten_config(config: DatasetConfig) -> DatasetConfig:
         self_play=self_play or None,
         custom_replays=custom_replays or None,
         formats=resolved.formats,
+        belief_target_type=resolved.belief_target_type,
     )
 
 
@@ -397,6 +407,7 @@ def build_dataset(
         "split": split,
         "test_fraction": test_fraction,
         "split_seed": split_seed,
+        "belief_target_type": resolved.belief_target_type,
     }
 
     datasets = []

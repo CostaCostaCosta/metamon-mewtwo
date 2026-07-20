@@ -1,0 +1,6 @@
+# Hotter/plastic comparison for Articuno ckpt36 -> Lapras target-team finetune.
+
+include 'metamon/rl/configs/training/articuno_lapras_finetune_v3_local32.gin'
+
+MetamonAMAGOExperiment.dd_kl_reference_update_interval = 16
+MetamonAMAGOExperiment.dd_adapt_interval = 16

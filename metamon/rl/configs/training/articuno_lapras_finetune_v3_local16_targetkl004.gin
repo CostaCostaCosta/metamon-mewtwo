@@ -1,0 +1,8 @@
+# Articuno ckpt36 -> Lapras target-team finetune with v3 local-reference KL.
+# Same controller recipe as local16, with a slightly higher target KL for the
+# second corrected matrix.
+
+include 'metamon/rl/configs/training/articuno_lapras_finetune_v3_local16.gin'
+
+MetamonAMAGOExperiment.target_kl_per_step = 0.04
+MetamonAMAGOExperiment.target_kl_final = 0.04

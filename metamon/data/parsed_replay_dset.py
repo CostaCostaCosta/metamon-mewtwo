@@ -109,6 +109,7 @@ class MetamonDataset(Dataset):
         split: Optional[str] = None,
         test_fraction: float = 0.1,
         split_seed: int = 42,
+        belief_target_type: Optional[str] = None,
     ):
         assert os.path.exists(dset_root), f"Dataset root not found: {dset_root}"
         assert split in (
@@ -134,6 +135,7 @@ class MetamonDataset(Dataset):
         self.split = split
         self.test_fraction = test_fraction
         self.split_seed = split_seed
+        self.belief_target_type = belief_target_type
 
         self.index_path = os.path.join(self.dset_root, "index.csv")
 
@@ -465,6 +467,21 @@ class MetamonDataset(Dataset):
         """Load and process a single battle trajectory."""
         data = self._load_json(filename)
         states = [UniversalState.from_dict(s) for s in data["states"]]
+        belief_targets = None
+        if self.belief_target_type is not None:
+            from metamon.rl.belief import build_gen1_belief_targets
+
+            tokenizer = getattr(self.observation_space, "tokenizer", None)
+            if tokenizer is None:
+                raise ValueError(
+                    "belief_target_type requires a TokenizedObservationSpace "
+                    "or another observation space with a tokenizer attribute"
+                )
+            belief_targets = build_gen1_belief_targets(
+                states=states,
+                tokenizer=tokenizer,
+                target_type=self.belief_target_type,
+            )
 
         # Build observations
         self.observation_space.reset()
@@ -507,10 +524,16 @@ class MetamonDataset(Dataset):
             )
             end = start + self.max_seq_len
             nested_obs = {k: v[start : end + 1] for k, v in nested_obs.items()}
+            if belief_targets is not None:
+                belief_targets = {
+                    k: v[start : end + 1] for k, v in belief_targets.items()
+                }
             action_infos = {k: v[start:end] for k, v in action_infos.items()}
             rewards = rewards[start:end]
             dones = dones[start:end]
 
+        if belief_targets is not None:
+            return dict(nested_obs), action_infos, rewards, dones, belief_targets
         return dict(nested_obs), action_infos, rewards, dones
 
     ###############################
@@ -554,6 +577,7 @@ class ParsedReplayDataset(MetamonDataset):
         split: Optional[str] = None,
         test_fraction: float = 0.1,
         split_seed: int = 42,
+        belief_target_type: Optional[str] = None,
     ):
         formats = formats or metamon.config.SUPPORTED_BATTLE_FORMATS
 
@@ -580,6 +604,7 @@ class ParsedReplayDataset(MetamonDataset):
             split=split,
             test_fraction=test_fraction,
             split_seed=split_seed,
+            belief_target_type=belief_target_type,
         )
 
 
@@ -616,6 +641,7 @@ class SelfPlayDataset(MetamonDataset):
         split: Optional[str] = None,
         test_fraction: float = 0.1,
         split_seed: int = 42,
+        belief_target_type: Optional[str] = None,
     ):
         if subset not in SELF_PLAY_SUBSETS:
             raise ValueError(
@@ -646,6 +672,7 @@ class SelfPlayDataset(MetamonDataset):
             split=split,
             test_fraction=test_fraction,
             split_seed=split_seed,
+            belief_target_type=belief_target_type,
         )
 
 

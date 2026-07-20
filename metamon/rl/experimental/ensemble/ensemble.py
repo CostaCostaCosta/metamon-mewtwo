@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import atexit
+import copy
 from collections import deque
 from dataclasses import dataclass, field
 import json
 import math
 import os
+import threading
 from typing import Any, Iterable, Optional
 
 import gymnasium as gym
@@ -268,6 +270,8 @@ class HeuristicRouterEnsemblePolicy(nn.Module):
             "METAMON_ENSEMBLE_DEBUG_METRICS_PATH"
         )
         self._anchor_metrics = _AnchorDeviationMetrics()
+        self._decision_debug_lock = threading.Lock()
+        self._last_decision_debug: dict[int, dict[str, Any]] = {}
         if self._anchor_metrics_path:
             atexit.register(self._flush_anchor_metrics)
 
@@ -389,6 +393,292 @@ class HeuristicRouterEnsemblePolicy(nn.Module):
         with open(self._anchor_metrics_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
 
+    def _store_decision_debug(
+        self, batch_idx: int, debug: dict[str, Any]
+    ) -> None:
+        with self._decision_debug_lock:
+            self._last_decision_debug[batch_idx] = copy.deepcopy(debug)
+
+    def get_last_decision_debug(self, batch_idx: int = 0) -> dict[str, Any]:
+        with self._decision_debug_lock:
+            return copy.deepcopy(self._last_decision_debug.get(batch_idx, {}))
+
+    def _store_simple_decision_debug(
+        self,
+        *,
+        batch_idx: int,
+        legal_actions: list[int],
+        selected_action: int,
+        member_steps: list[dict[str, Any]],
+        reason: str,
+    ) -> None:
+        member_rows = []
+        vote_counts: dict[int, int] = {}
+        action_prob_sums = {int(action): 0.0 for action in legal_actions}
+        for idx, step in enumerate(member_steps):
+            spec = step["member"].spec
+            probs = step["probs"][batch_idx].detach().float().cpu()
+            legal_probs = probs[legal_actions] if legal_actions else torch.empty(0)
+            legal_total = float(legal_probs.sum().item()) if legal_actions else 0.0
+            if legal_actions and legal_total > 0.0:
+                normalized = legal_probs / legal_total
+                top_local = int(torch.argmax(normalized).item())
+                top_action = int(legal_actions[top_local])
+                top_prob = float(normalized[top_local].item())
+                for action, prob in zip(legal_actions, normalized.tolist()):
+                    action_prob_sums[int(action)] += float(prob)
+                vote_counts[top_action] = vote_counts.get(top_action, 0) + 1
+            else:
+                top_action = None
+                top_prob = None
+            member_rows.append(
+                {
+                    "idx": idx,
+                    "model_name": spec.model_name,
+                    "checkpoint": spec.checkpoint,
+                    "gxe": float(spec.gxe),
+                    "top_action": top_action,
+                    "top_prob": top_prob,
+                    "selected_judge": False,
+                }
+            )
+
+        denom = max(len(member_steps), 1)
+        action_rows = [
+            {
+                "action": int(action),
+                "selected": int(action) == int(selected_action),
+                "mean_member_prob": action_prob_sums[int(action)] / denom,
+                "member_top_votes": vote_counts.get(int(action), 0),
+                "in_shortlist": True,
+            }
+            for action in legal_actions
+        ]
+        self._store_decision_debug(
+            batch_idx,
+            {
+                "status": reason,
+                "selected_action": int(selected_action),
+                "legal_actions": [int(action) for action in legal_actions],
+                "members": member_rows,
+                "actions": action_rows,
+                "proposer_variants": [],
+                "judges": [],
+                "candidates": [],
+                "decision": {
+                    "reason": reason,
+                    "selected_action": int(selected_action),
+                },
+            },
+        )
+
+    def _build_decision_debug(
+        self,
+        *,
+        batch_idx: int,
+        legal_actions: list[int],
+        selected_action: int,
+        default_anchor_action: int,
+        anchor_action: int,
+        consensus_action: int,
+        best_action: int,
+        anchor_score: float,
+        best_score: float,
+        features: list[dict[str, Any]],
+        member_steps: list[dict[str, Any]],
+        proposer_scores: list[float],
+        proposer_weights: list[float],
+        judge_scores: list[float],
+        judge_order: list[int],
+        judge_weights: list[float],
+        proposer_variants: list[_ProposerVariant],
+        candidate_support: dict[int, float],
+        candidate_members: dict[int, set[int]],
+        candidate_roles: dict[int, set[str]],
+        shortlist: list[int],
+        proposal_support: dict[int, float],
+        final_scores: torch.Tensor,
+        stall_penalties: dict[int, float],
+        state_summary: dict[str, float],
+        forced_switch: bool,
+        mixed_choice: bool,
+        disagreement: float,
+        desperation: bool,
+        stabilize: bool,
+        full_rerank: bool,
+        allow_override: Optional[bool],
+        override_margin: Optional[float],
+        decision_reason: str,
+    ) -> dict[str, Any]:
+        judge_weight_by_idx = {
+            int(idx): float(weight) for idx, weight in zip(judge_order, judge_weights)
+        }
+        member_rows = []
+        for idx, info in enumerate(features):
+            spec = info["spec"]
+            member_rows.append(
+                {
+                    "idx": idx,
+                    "model_name": spec.model_name,
+                    "checkpoint": spec.checkpoint,
+                    "gxe": float(spec.gxe),
+                    "proposer_bias": float(spec.proposer_bias),
+                    "judge_bias": float(spec.judge_bias),
+                    "shortlist_k": int(spec.shortlist_k),
+                    "proposal_roles": list(spec.proposal_roles),
+                    "top_action": int(info["top_action"]),
+                    "top_prob": float(info["top_prob"]),
+                    "margin": float(info["margin"]),
+                    "entropy": float(info["entropy"]),
+                    "certainty": float(info["certainty"]),
+                    "move_mass": float(info.get("move_mass", 0.0)),
+                    "switch_mass": float(info.get("switch_mass", 0.0)),
+                    "counter_anchor_mass": float(info.get("counter_anchor_mass", 0.0)),
+                    "proposer_score": float(proposer_scores[idx]),
+                    "proposer_weight": float(proposer_weights[idx]),
+                    "judge_score": float(judge_scores[idx]),
+                    "selected_judge": idx in judge_order,
+                    "judge_weight": judge_weight_by_idx.get(idx),
+                }
+            )
+
+        proposer_rows = []
+        for variant in proposer_variants:
+            info = features[variant.proposer_idx]
+            proposer_rows.append(
+                {
+                    "member_idx": int(variant.proposer_idx),
+                    "model_name": info["spec"].model_name,
+                    "checkpoint": info["spec"].checkpoint,
+                    "role": variant.role,
+                    "weight": float(variant.weight),
+                    "allowed_actions": [
+                        int(action) for action in variant.allowed_actions
+                    ],
+                    "shortlist_k": self._shortlist_k_for_variant(
+                        info=info,
+                        proposer_idx=variant.proposer_idx,
+                        role=variant.role,
+                        allowed_actions=variant.allowed_actions,
+                        mixed_choice=mixed_choice,
+                    ),
+                }
+            )
+
+        final_score_by_action = {
+            int(action): float(score)
+            for action, score in zip(shortlist, final_scores.detach().float().cpu())
+        }
+        action_prob_sums = {int(action): 0.0 for action in legal_actions}
+        action_prob_max = {int(action): 0.0 for action in legal_actions}
+        vote_counts: dict[int, int] = {}
+        for step in member_steps:
+            probs = step["probs"][batch_idx, legal_actions].detach().float().cpu()
+            probs = probs / probs.sum().clamp(min=EPS)
+            top_action = int(legal_actions[int(torch.argmax(probs).item())])
+            vote_counts[top_action] = vote_counts.get(top_action, 0) + 1
+            for action, prob in zip(legal_actions, probs.tolist()):
+                action = int(action)
+                prob = float(prob)
+                action_prob_sums[action] += prob
+                action_prob_max[action] = max(action_prob_max[action], prob)
+
+        denom = max(len(member_steps), 1)
+        action_rows = []
+        for action in legal_actions:
+            action = int(action)
+            action_rows.append(
+                {
+                    "action": action,
+                    "selected": action == int(selected_action),
+                    "default_anchor": action == int(default_anchor_action),
+                    "anchor": action == int(anchor_action),
+                    "consensus": action == int(consensus_action),
+                    "proposed_best": action == int(best_action),
+                    "in_shortlist": action in final_score_by_action,
+                    "proposal_support": float(proposal_support.get(action, 0.0)),
+                    "candidate_support": float(candidate_support.get(action, 0.0)),
+                    "final_score": final_score_by_action.get(action),
+                    "stall_penalty": float(stall_penalties.get(action, 0.0)),
+                    "member_top_votes": vote_counts.get(action, 0),
+                    "mean_member_prob": action_prob_sums[action] / denom,
+                    "max_member_prob": action_prob_max[action],
+                    "candidate_members": sorted(
+                        int(idx) for idx in candidate_members.get(action, set())
+                    ),
+                    "candidate_roles": sorted(candidate_roles.get(action, set())),
+                }
+            )
+        action_rows.sort(
+            key=lambda row: (
+                row["selected"],
+                row["final_score"] if row["final_score"] is not None else float("-inf"),
+                row["proposal_support"],
+                row["mean_member_prob"],
+            ),
+            reverse=True,
+        )
+
+        candidate_rows = [
+            {
+                "action": int(action),
+                "support": float(candidate_support[action]),
+                "members": sorted(
+                    int(idx) for idx in candidate_members.get(action, set())
+                ),
+                "roles": sorted(candidate_roles.get(action, set())),
+            }
+            for action in sorted(candidate_support)
+        ]
+        candidate_rows.sort(key=lambda row: row["support"], reverse=True)
+
+        judge_rows = [
+            {
+                "member_idx": int(idx),
+                "model_name": features[idx]["spec"].model_name,
+                "checkpoint": features[idx]["spec"].checkpoint,
+                "score": float(judge_scores[idx]),
+                "weight": float(weight),
+            }
+            for idx, weight in zip(judge_order, judge_weights)
+        ]
+
+        return {
+            "status": "running",
+            "selected_action": int(selected_action),
+            "legal_actions": [int(action) for action in legal_actions],
+            "members": member_rows,
+            "actions": action_rows,
+            "proposer_variants": proposer_rows,
+            "judges": judge_rows,
+            "candidates": candidate_rows,
+            "decision": {
+                "reason": decision_reason,
+                "selected_action": int(selected_action),
+                "default_anchor_action": int(default_anchor_action),
+                "anchor_action": int(anchor_action),
+                "consensus_action": int(consensus_action),
+                "proposed_best_action": int(best_action),
+                "anchor_score": float(anchor_score),
+                "best_score": float(best_score),
+                "score_margin_vs_anchor": float(best_score - anchor_score),
+                "allow_override": allow_override,
+                "override_margin": override_margin,
+                "forced_switch": bool(forced_switch),
+                "mixed_choice": bool(mixed_choice),
+                "disagreement": float(disagreement),
+                "desperation": bool(desperation),
+                "stabilize": bool(stabilize),
+                "full_rerank": bool(full_rerank),
+                "num_judges": len(judge_order),
+                "num_proposer_variants": len(proposer_variants),
+                "shortlist": [int(action) for action in shortlist],
+            },
+            "state_summary": {
+                key: float(value) for key, value in state_summary.items()
+            },
+        }
+
     def get_actions(
         self,
         obs: dict[str, torch.Tensor],
@@ -450,10 +740,25 @@ class HeuristicRouterEnsemblePolicy(nn.Module):
                 (~illegal_actions[batch_idx]).nonzero(as_tuple=True)[0].tolist()
             )
             if not legal_actions:
+                self._store_simple_decision_debug(
+                    batch_idx=batch_idx,
+                    legal_actions=[],
+                    selected_action=0,
+                    member_steps=member_steps,
+                    reason="no_legal_actions",
+                )
                 actions.append(0)
                 continue
             if len(legal_actions) == 1:
-                actions.append(legal_actions[0])
+                selected = int(legal_actions[0])
+                self._store_simple_decision_debug(
+                    batch_idx=batch_idx,
+                    legal_actions=legal_actions,
+                    selected_action=selected,
+                    member_steps=member_steps,
+                    reason="only_one_legal_action",
+                )
+                actions.append(selected)
                 continue
             tracker = stall_trackers[batch_idx]
             current_state_key = self._make_cycle_key(
@@ -1305,12 +1610,62 @@ class HeuristicRouterEnsemblePolicy(nn.Module):
 
         best_local = int(torch.argmax(final_scores).item())
         best_action = shortlist[best_local]
-        if best_action == anchor_action:
+        anchor_score = float("-inf")
+        if anchor_action in shortlist:
+            anchor_score = float(final_scores[shortlist.index(anchor_action)].item())
+        best_score = float(final_scores[best_local].item())
+
+        def finalize_decision(
+            *,
+            selected_action: int,
+            decision_reason: str,
+            allow_override_value: Optional[bool],
+            override_margin_value: Optional[float],
+        ) -> int:
+            self._store_decision_debug(
+                batch_idx,
+                self._build_decision_debug(
+                    batch_idx=batch_idx,
+                    legal_actions=legal_actions,
+                    selected_action=selected_action,
+                    default_anchor_action=default_anchor_action,
+                    anchor_action=anchor_action,
+                    consensus_action=consensus_action,
+                    best_action=best_action,
+                    anchor_score=anchor_score,
+                    best_score=best_score,
+                    features=features,
+                    member_steps=member_steps,
+                    proposer_scores=proposer_scores,
+                    proposer_weights=proposer_weights,
+                    judge_scores=judge_scores,
+                    judge_order=judge_order,
+                    judge_weights=judge_weights,
+                    proposer_variants=proposer_variants,
+                    candidate_support=candidate_support,
+                    candidate_members=candidate_members,
+                    candidate_roles=candidate_roles,
+                    shortlist=shortlist,
+                    proposal_support=proposal_support,
+                    final_scores=final_scores,
+                    stall_penalties=stall_penalties,
+                    state_summary=state_summary,
+                    forced_switch=forced_switch,
+                    mixed_choice=mixed_choice,
+                    disagreement=disagreement,
+                    desperation=desperation,
+                    stabilize=stabilize,
+                    full_rerank=full_rerank,
+                    allow_override=allow_override_value,
+                    override_margin=override_margin_value,
+                    decision_reason=decision_reason,
+                ),
+            )
             self._record_anchor_decision(
                 default_anchor_action=default_anchor_action,
                 anchor_action=anchor_action,
                 proposed_best_action=best_action,
-                final_action=best_action,
+                final_action=selected_action,
                 forced_switch=forced_switch,
                 single_judge=len(judge_order) == 1,
                 full_rerank=full_rerank,
@@ -1318,12 +1673,16 @@ class HeuristicRouterEnsemblePolicy(nn.Module):
                 proposer_variant_count=len(proposer_variants),
                 judge_count=len(judge_order),
             )
-            return best_action
+            return selected_action
 
-        anchor_score = float("-inf")
-        if anchor_action in shortlist:
-            anchor_score = float(final_scores[shortlist.index(anchor_action)].item())
-        best_score = float(final_scores[best_local].item())
+        if best_action == anchor_action:
+            return finalize_decision(
+                selected_action=best_action,
+                decision_reason="anchor_or_judged_best",
+                allow_override_value=None,
+                override_margin_value=None,
+            )
+
         supporting_members = sum(
             idx != self.anchor_idx for idx in candidate_members.get(best_action, set())
         )
@@ -1384,32 +1743,18 @@ class HeuristicRouterEnsemblePolicy(nn.Module):
         if not forced_switch and (
             not allow_override or best_score - anchor_score < override_margin
         ):
-            self._record_anchor_decision(
-                default_anchor_action=default_anchor_action,
-                anchor_action=anchor_action,
-                proposed_best_action=best_action,
-                final_action=anchor_action,
-                forced_switch=forced_switch,
-                single_judge=len(judge_order) == 1,
-                full_rerank=full_rerank,
-                shortlist_size=len(shortlist),
-                proposer_variant_count=len(proposer_variants),
-                judge_count=len(judge_order),
+            return finalize_decision(
+                selected_action=anchor_action,
+                decision_reason="anchor_guard",
+                allow_override_value=allow_override,
+                override_margin_value=override_margin,
             )
-            return anchor_action
-        self._record_anchor_decision(
-            default_anchor_action=default_anchor_action,
-            anchor_action=anchor_action,
-            proposed_best_action=best_action,
-            final_action=best_action,
-            forced_switch=forced_switch,
-            single_judge=len(judge_order) == 1,
-            full_rerank=full_rerank,
-            shortlist_size=len(shortlist),
-            proposer_variant_count=len(proposer_variants),
-            judge_count=len(judge_order),
+        return finalize_decision(
+            selected_action=best_action,
+            decision_reason="override",
+            allow_override_value=allow_override,
+            override_margin_value=override_margin,
         )
-        return best_action
 
     def _judge_shortlist(
         self,

@@ -17,6 +17,8 @@ __pycache__/
 *.sh
 !tools/
 !tools/*.sh
+!scripts/run_articuno_lapras_v3_finetune_matrix.sh
+!scripts/run_plastic_tauros_15m_sweep.sh
 *.csv
 *.pt
 
@@ -174,6 +176,8 @@ cython_debug/
 *.sh
 !tools/
 !tools/*.sh
+!scripts/run_articuno_lapras_v3_finetune_matrix.sh
+!scripts/run_plastic_tauros_15m_sweep.sh
 *.csv
 *.pt
 .ruff_cache/

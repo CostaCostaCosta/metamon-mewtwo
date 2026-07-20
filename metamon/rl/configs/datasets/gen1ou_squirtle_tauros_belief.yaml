@@ -1,0 +1,6 @@
+formats:
+  - gen1ou
+replay_weight: 0.0
+self_play:
+  pac-tauros: 1.0
+belief_target_type: gen1_species_moves_set

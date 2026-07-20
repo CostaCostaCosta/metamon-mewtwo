@@ -7,7 +7,7 @@ agent.Agent.online_coeff = 0.0
 agent.MultiTaskAgent.online_coeff = 0.0
 
 agent.Agent.offline_coeff = 1.0
-agent.MultiTaskAgent.offline_coeff = 1.0
+agent.MultiTaskAgent.offline_coeff = 1.0A
 
 amago.agent.Agent.fake_filter = True
 amago.agent.MultiTaskAgent.fake_filter = True

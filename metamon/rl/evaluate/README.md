@@ -93,8 +93,11 @@ The acceptor must be online before the challenger starts sending challenges.
 | `--save_results_to` | off | Save per-battle result logs |
 | `--team_preview_checkpoint` | off | Team preview model for Gen 9 |
 | `--step` | off | Open a Gradio step preview for ladder, pokeagent, or challenge evals |
+| `--ensemble_step` | off | Open a Gradio ensemble decision preview for ladder, pokeagent, or challenge evals |
 
 Use `--step` with Showdown-backed evals to inspect each policy decision in a live Gradio dashboard, including the current state, action probabilities, selected action, and value-head estimate. The UI defaults to `127.0.0.1:7860`; override it with `--step_ui_host`, `--step_ui_port`, or `--step_ui_share`.
+
+Use `--ensemble_step` with ensemble agents such as `tauros-ensemble` to inspect member top actions, proposer routing, judge weights, candidate support, shortlist scores, anchor overrides, and the final selected action. It uses the same UI host, port, and share options as `--step`.
 
 ### Custom Models
 

@@ -101,6 +101,12 @@ def add_cli(parser):
         help="Number of gradient accumulations per update.",
     )
     parser.add_argument(
+        "--steps_per_epoch",
+        type=int,
+        default=25_000,
+        help="Number of training batches per epoch before grad accumulation.",
+    )
+    parser.add_argument(
         "--model_gin_config",
         type=str,
         required=True,
@@ -169,6 +175,17 @@ def create_offline_rl_trainer(
     wandb_entity: str = WANDB_ENTITY,
     manual_gin_overrides: Optional[dict] = None,
     ckpt_interval: int = 2,
+    lapras_tauros_eval: bool = False,
+    lapras_tauros_eval_base_model: Optional[str] = None,
+    lapras_tauros_eval_train_gin_config: Optional[str] = None,
+    lapras_tauros_eval_reward_function: Optional[str] = None,
+    lapras_tauros_eval_battles: int = 100,
+    lapras_tauros_eval_interval_epochs: int = 1,
+    lapras_tauros_eval_agent_team_set: str = "lapras",
+    lapras_tauros_eval_opponent_team_set: str = "competitive",
+    lapras_tauros_eval_output_dir: Optional[str] = None,
+    lapras_tauros_eval_timeout: int = 7200,
+    lapras_tauros_eval_acceptor_startup_delay: float = 10.0,
 ):
     """
     Convenience function that creates an AMAGO experiment with default arguments
@@ -248,6 +265,25 @@ def create_offline_rl_trainer(
         batches_per_update=grad_accum,
         mixed_precision="no",
     )
+    experiment.lapras_tauros_eval = lapras_tauros_eval
+    experiment.lapras_tauros_eval_base_model = lapras_tauros_eval_base_model
+    experiment.lapras_tauros_eval_train_gin_config = (
+        lapras_tauros_eval_train_gin_config
+    )
+    experiment.lapras_tauros_eval_reward_function = (
+        lapras_tauros_eval_reward_function
+    )
+    experiment.lapras_tauros_eval_battles = lapras_tauros_eval_battles
+    experiment.lapras_tauros_eval_interval_epochs = lapras_tauros_eval_interval_epochs
+    experiment.lapras_tauros_eval_agent_team_set = lapras_tauros_eval_agent_team_set
+    experiment.lapras_tauros_eval_opponent_team_set = (
+        lapras_tauros_eval_opponent_team_set
+    )
+    experiment.lapras_tauros_eval_output_dir = lapras_tauros_eval_output_dir
+    experiment.lapras_tauros_eval_timeout = lapras_tauros_eval_timeout
+    experiment.lapras_tauros_eval_acceptor_startup_delay = (
+        lapras_tauros_eval_acceptor_startup_delay
+    )
     return experiment
 
 
@@ -310,6 +346,7 @@ if __name__ == "__main__":
         dloader_workers=args.dloader_workers,
         epochs=args.epochs,
         grad_accum=args.grad_accum,
+        steps_per_epoch=args.steps_per_epoch,
         batch_size_per_gpu=args.batch_size_per_gpu,
         log=args.log,
         wandb_project=WANDB_PROJECT,

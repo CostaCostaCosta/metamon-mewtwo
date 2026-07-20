@@ -42,6 +42,31 @@ def main():
         "--checkpoint", type=int, default=None, help="Checkpoint epoch."
     )
     parser.add_argument(
+        "--local_base_model",
+        default=None,
+        help="Base pretrained model for a local finetune checkpoint.",
+    )
+    parser.add_argument(
+        "--local_ckpt_dir",
+        default=None,
+        help="AMAGO checkpoint root, equivalent to finetune --save_dir.",
+    )
+    parser.add_argument(
+        "--local_run_name",
+        default=None,
+        help="Local finetune run name, equivalent to finetune --run_name.",
+    )
+    parser.add_argument(
+        "--local_train_gin_config",
+        default=None,
+        help="Training gin used by the local finetune checkpoint.",
+    )
+    parser.add_argument(
+        "--local_reward_function",
+        default=None,
+        help="Reward function override for the local finetune checkpoint.",
+    )
+    parser.add_argument(
         "--save_results_to", default=None, help="Directory for per-battle CSV logs."
     )
     parser.add_argument(
@@ -51,11 +76,37 @@ def main():
 
     import amago
     from metamon.env import get_metamon_teams, ChallengeByUsername
-    from metamon.rl.pretrained import get_pretrained_model
+    from metamon.interface import get_reward_function
+    from metamon.rl.pretrained import (
+        ALL_PRETRAINED_MODELS,
+        LocalFinetunedModel,
+        get_pretrained_model,
+    )
     from metamon.rl.metamon_to_amago import make_challenge_env
 
     # Load model
-    pretrained = get_pretrained_model(args.model_name)
+    if args.local_base_model is not None:
+        if args.local_ckpt_dir is None:
+            raise ValueError("--local_ckpt_dir is required with --local_base_model")
+        if args.checkpoint is None:
+            raise ValueError("--checkpoint is required with --local_base_model")
+        base_model = ALL_PRETRAINED_MODELS[args.local_base_model]
+        reward_function = (
+            get_reward_function(args.local_reward_function)
+            if args.local_reward_function is not None
+            else None
+        )
+        pretrained = LocalFinetunedModel(
+            base_model=base_model,
+            amago_ckpt_dir=args.local_ckpt_dir,
+            model_name=args.local_run_name or args.model_name,
+            default_checkpoint=args.checkpoint,
+            train_gin_config=args.local_train_gin_config,
+            reward_function=reward_function,
+            battle_backend=args.battle_backend,
+        )
+    else:
+        pretrained = get_pretrained_model(args.model_name)
     agent = pretrained.initialize_agent(
         checkpoint=args.checkpoint,
         log=False,

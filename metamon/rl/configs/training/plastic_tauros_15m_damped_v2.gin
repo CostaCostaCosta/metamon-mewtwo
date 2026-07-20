@@ -1,0 +1,56 @@
+# Small-damped-v2: soft update damping for the 15M grouped Tauros recipe.
+# Goal: shape updates without allowing the LR controller to dead-stop learning.
+
+include 'metamon/rl/configs/training/alakazam3_isfilter.gin'
+
+# Optimizer: same base LR envelope as v1, with gentler late decay.
+MetamonAMAGOExperiment.learning_rate = 1.0e-4
+MetamonAMAGOExperiment.lr_warmup_steps = 2_000
+MetamonAMAGOExperiment.min_lr = 1.0e-5
+MetamonAMAGOExperiment.max_lr = 1.0e-4
+MetamonAMAGOExperiment.lr_decay_steps = 600_000
+MetamonAMAGOExperiment.lr_final_multiplier = 0.35
+MetamonAMAGOExperiment.grad_clip = 1.0
+MetamonAMAGOExperiment.grad_clip_final = 0.6
+MetamonAMAGOExperiment.grad_clip_schedule_steps = 600_000
+
+# Rolling-reference reverse KL with a looser, slower target schedule.
+MetamonAMAGOExperiment.use_dynamic_damping = True
+MetamonAMAGOExperiment.target_kl_per_step = 0.08
+MetamonAMAGOExperiment.target_kl_final = 0.04
+MetamonAMAGOExperiment.target_kl_schedule_steps = 600_000
+MetamonAMAGOExperiment.kl_tolerance = 1.5
+MetamonAMAGOExperiment.kl_coef_init = 0.015
+MetamonAMAGOExperiment.kl_coef_max = 0.20
+MetamonAMAGOExperiment.kl_multiplier_max = 20.0
+MetamonAMAGOExperiment.kl_power_alpha = 0.0
+MetamonAMAGOExperiment.kl_schedule_steps = 600_000
+MetamonAMAGOExperiment.dd_adapt_interval = 10
+MetamonAMAGOExperiment.kl_coef_growth_factor = 1.15
+MetamonAMAGOExperiment.kl_coef_decay_factor = 0.98
+MetamonAMAGOExperiment.lr_shrink_factor = 0.93
+MetamonAMAGOExperiment.lr_grow_factor = 1.01
+MetamonAMAGOExperiment.lr_multiplier_min = 0.25
+MetamonAMAGOExperiment.lr_multiplier_max = 2.0
+
+# Entropy floor: preserve support without overpowering the actor objective.
+MetamonAMAGOExperiment.ent_coef_init = 0.0035
+MetamonAMAGOExperiment.ent_coef_min = 0.001
+MetamonAMAGOExperiment.ent_power_alpha = 0.25
+MetamonAMAGOExperiment.ent_schedule_steps = 600_000
+
+# PPO-style behavior-action ratio guard against the rolling reference.
+MetamonAMAGOExperiment.ratio_clip_low = 0.75
+MetamonAMAGOExperiment.ratio_clip_high = 1.25
+MetamonAMAGOExperiment.ratio_clip_low_final = 0.85
+MetamonAMAGOExperiment.ratio_clip_high_final = 1.15
+MetamonAMAGOExperiment.ratio_clip_schedule_steps = 600_000
+MetamonAMAGOExperiment.ratio_clip_penalty_coeff = 0.015
+
+# Evaluate the smoother policy while training the current policy.
+MetamonAMAGOExperiment.use_ema = True
+MetamonAMAGOExperiment.ema_decay = 0.999
+MetamonAMAGOExperiment.ema_update_interval = 1
+MetamonAMAGOExperiment.ema_warmup_steps = 0
+MetamonAMAGOExperiment.ema_eval_only = True
+MetamonAMAGOExperiment.log_policy_health_metrics = True

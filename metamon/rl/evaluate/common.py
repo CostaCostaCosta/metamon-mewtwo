@@ -15,6 +15,7 @@ import os
 import random
 import re
 import subprocess
+import sys
 import time
 import yaml
 from argparse import ArgumentParser
@@ -41,6 +42,11 @@ class PolicySpec:
     temperature: float
     team_set: str
     battle_backend: str
+    local_base_model: Optional[str] = None
+    local_ckpt_dir: Optional[str] = None
+    local_run_name: Optional[str] = None
+    local_train_gin_config: Optional[str] = None
+    local_reward_function: Optional[str] = None
 
     @property
     def short_label(self) -> str:
@@ -57,7 +63,13 @@ class PolicySpec:
     @property
     def unique_key(self) -> str:
         """Deterministic key that uniquely identifies this policy configuration."""
-        return f"{self.model_name}_ckpt{self.checkpoint}_t{self.temperature}_{self.team_set}_{self.battle_backend}"
+        local = ""
+        if self.local_base_model is not None:
+            local = (
+                f"_local-{self.local_base_model}-"
+                f"{self.local_run_name or self.model_name}"
+            )
+        return f"{self.model_name}{local}_ckpt{self.checkpoint}_t{self.temperature}_{self.team_set}_{self.battle_backend}"
 
 
 @dataclass
@@ -464,7 +476,7 @@ def run_matchup_pair(
         policy: PolicySpec, username: str, opponent_username: str, role: str
     ):
         cmd = [
-            "python",
+            sys.executable,
             serve_script,
             "--model_name",
             policy.model_name,
@@ -489,6 +501,16 @@ def run_matchup_pair(
         ]
         if policy.checkpoint is not None:
             cmd.extend(["--checkpoint", str(policy.checkpoint)])
+        if policy.local_base_model is not None:
+            cmd.extend(["--local_base_model", policy.local_base_model])
+        if policy.local_ckpt_dir is not None:
+            cmd.extend(["--local_ckpt_dir", policy.local_ckpt_dir])
+        if policy.local_run_name is not None:
+            cmd.extend(["--local_run_name", policy.local_run_name])
+        if policy.local_train_gin_config is not None:
+            cmd.extend(["--local_train_gin_config", policy.local_train_gin_config])
+        if policy.local_reward_function is not None:
+            cmd.extend(["--local_reward_function", policy.local_reward_function])
         if save_trajectories:
             traj_dir = os.path.join(matchup_dir, "trajectories")
             os.makedirs(traj_dir, exist_ok=True)

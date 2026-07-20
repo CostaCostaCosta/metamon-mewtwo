@@ -56,6 +56,10 @@ Pokémon Showdown hosts many different rulesets spanning nine generations of the
 12. [**Acknowledgements**](#acknowledgements)
 13. [**Citation**](#citation)
 
+Research notes:
+
+- [PlasticTauros belief-control findings](docs/plastic_tauros_belief.md)
+
 
 <br>
  
@@ -1078,6 +1082,14 @@ python -m metamon.rl.finetune \
 ```
 
 Continue from a local run with `--prev_run_dir`, `--prev_run_name`, and `--prev_checkpoint`. Use `--base_checkpoint` to pick a non-default HuggingFace epoch on the first iteration. For iterative self-play loops (new data piles, annealed mixing, chaining `prev_dataset`), see the walkthrough in `metamon/rl/finetune.py` and examples in `metamon/rl/configs/datasets/`.
+
+Lapras note: the public `finetune.gin` Articuno -> Lapras run produced strong
+100-game TaurosV0 smoke-test results at epochs 0 and 4, but epoch 4 later
+failed on the ladder with a low win rate. The `lapras_public_baseline` registry
+therefore defaults to epoch 0; treat that baseline as a positive control, not
+the preferred continued-finetuning objective. The first actor-only
+KL-damped rerun, `lapras_articuno40_kl_anchor_actor_phase1`, also underperformed
+the public baseline in TaurosV0 H2H, peaking at only 57% over 100 games.
 
 <br>
 

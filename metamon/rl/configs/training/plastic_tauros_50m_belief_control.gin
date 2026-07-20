@@ -1,0 +1,37 @@
+# Belief version of the TaurosV0-scale grouped IS-filter recipe.
+# Mirrors grouped_v2_large_isfilter.gin but binds hparams to
+# MetamonBeliefMultiTaskAgent instead of amago.agent.MultiTaskAgent.
+
+import amago.agent
+import metamon.rl.belief
+import metamon.rl.custom_agent
+
+belief.MetamonBeliefMultiTaskAgent.reward_multiplier = 10.
+belief.MetamonBeliefMultiTaskAgent.tau = .008
+belief.MetamonBeliefMultiTaskAgent.num_actions_for_value_in_critic_loss = 4
+belief.MetamonBeliefMultiTaskAgent.num_actions_for_value_in_actor_loss = 4
+belief.MetamonBeliefMultiTaskAgent.online_coeff = 0.0
+belief.MetamonBeliefMultiTaskAgent.offline_coeff = 1.0
+belief.MetamonBeliefMultiTaskAgent.fbc_filter_func = @custom_agent.ISAdvantageFilter()
+belief.MetamonBeliefMultiTaskAgent.critic_loss_weight = 13.5
+
+custom_agent.ISAdvantageFilter.beta = 3.0
+custom_agent.ISAdvantageFilter.clip_weights_low = 1e-6
+custom_agent.ISAdvantageFilter.clip_weights_high = 100.
+custom_agent.ISAdvantageFilter.seq_p_low = 0.2
+custom_agent.ISAdvantageFilter.seq_p_full = 0.7
+custom_agent.ISAdvantageFilter.seq_floor = 0.1
+custom_agent.ISAdvantageFilter.seq_floor_warmup_steps = 100_000
+custom_agent.ISAdvantageFilter.seq_buffer_size = 10000
+custom_agent.ISAdvantageFilter.seq_warmup = 200
+
+MetamonAMAGOExperiment.l2_coeff = 1e-4
+MetamonAMAGOExperiment.learning_rate = 1e-4
+MetamonAMAGOExperiment.grad_clip = 1.0
+MetamonAMAGOExperiment.lr_warmup_steps = 5000
+
+MetamonAMAGOExperiment.use_dynamic_damping = False
+MetamonAMAGOExperiment.use_ema = False
+MetamonAMAGOExperiment.log_policy_health_metrics = True
+MetamonAMAGOExperiment.lr_decay_steps = 0
+MetamonAMAGOExperiment.grad_clip_final = None

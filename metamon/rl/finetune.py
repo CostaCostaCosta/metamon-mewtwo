@@ -173,6 +173,23 @@ def add_cli(parser):
         nargs="*",
         default=[1, 2, 3, 4, 9],
     )
+    parser.add_argument(
+        "--lapras_tauros_eval",
+        action="store_true",
+        help=(
+            "After each checkpoint epoch, run a 100-game Lapras-team eval "
+            "against TaurosV0 on competitive teams and log it to W&B."
+        ),
+    )
+    parser.add_argument("--lapras_tauros_eval_battles", type=int, default=100)
+    parser.add_argument("--lapras_tauros_eval_interval_epochs", type=int, default=1)
+    parser.add_argument("--lapras_tauros_eval_agent_team_set", default="lapras")
+    parser.add_argument("--lapras_tauros_eval_opponent_team_set", default="competitive")
+    parser.add_argument("--lapras_tauros_eval_output_dir", default=None)
+    parser.add_argument("--lapras_tauros_eval_timeout", type=int, default=7200)
+    parser.add_argument(
+        "--lapras_tauros_eval_acceptor_startup_delay", type=float, default=10.0
+    )
     parser.add_argument("--log", action="store_true")
     return parser
 
@@ -353,6 +370,19 @@ if __name__ == "__main__":
         wandb_entity=WANDB_ENTITY,
         manual_gin_overrides=pretrained.gin_overrides,
         ckpt_interval=args.ckpt_interval,
+        lapras_tauros_eval=args.lapras_tauros_eval,
+        lapras_tauros_eval_base_model=args.base_model,
+        lapras_tauros_eval_train_gin_config=args.train_gin_config,
+        lapras_tauros_eval_reward_function=args.reward_function,
+        lapras_tauros_eval_battles=args.lapras_tauros_eval_battles,
+        lapras_tauros_eval_interval_epochs=args.lapras_tauros_eval_interval_epochs,
+        lapras_tauros_eval_agent_team_set=args.lapras_tauros_eval_agent_team_set,
+        lapras_tauros_eval_opponent_team_set=args.lapras_tauros_eval_opponent_team_set,
+        lapras_tauros_eval_output_dir=args.lapras_tauros_eval_output_dir,
+        lapras_tauros_eval_timeout=args.lapras_tauros_eval_timeout,
+        lapras_tauros_eval_acceptor_startup_delay=(
+            args.lapras_tauros_eval_acceptor_startup_delay
+        ),
     )
 
     experiment.start()
@@ -365,6 +395,7 @@ if __name__ == "__main__":
         freeze_patterns=args.freeze_patterns,
         trainable_patterns=args.trainable_patterns,
     )
+    experiment.log_post_load_pre_train_diagnostics()
 
     experiment.learn()
     wandb.finish()

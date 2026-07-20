@@ -279,6 +279,12 @@ class PretrainedModel:
         ckpt_keys = set(ckpt_state.keys())
         model_keys = set(model_state.keys())
         missing = model_keys - ckpt_keys
+        if missing and not any(k.startswith("_epoch_start_") for k in ckpt_keys):
+            missing = {
+                key
+                for key in missing
+                if not PretrainedModel._can_restore_epoch_start_key(key, ckpt_keys)
+            }
         unexpected = ckpt_keys - model_keys
         if missing:
             raise RuntimeError(
@@ -290,8 +296,9 @@ class PretrainedModel:
                 f"Checkpoint has {len(unexpected)} unexpected keys not in the model:\n"
                 + "\n".join(f"  {k}" for k in sorted(unexpected))
             )
+        validated_keys = model_keys & ckpt_keys
         shape_mismatches = []
-        for k in model_keys:
+        for k in validated_keys:
             if model_state[k].shape != ckpt_state[k].shape:
                 shape_mismatches.append(
                     f"  {k}: model={list(model_state[k].shape)} vs ckpt={list(ckpt_state[k].shape)}"
@@ -304,9 +311,22 @@ class PretrainedModel:
         ckpt_params = sum(p.numel() for p in ckpt_state.values())
         model_params = sum(p.numel() for p in model_state.values())
         print(
-            f"Checkpoint validated: {len(model_keys)} keys, "
-            f"{model_params:,} params (model) == {ckpt_params:,} params (ckpt)"
+            f"Checkpoint validated: {len(validated_keys)} loaded keys, "
+            f"{model_params:,} params (model), {ckpt_params:,} params (ckpt)"
         )
+
+    @staticmethod
+    def _can_restore_epoch_start_key(key: str, ckpt_keys: set[str]) -> bool:
+        epoch_start_modules = {
+            "_epoch_start_tstep_encoder.": "tstep_encoder.",
+            "_epoch_start_traj_encoder.": "traj_encoder.",
+            "_epoch_start_actor.": "actor.",
+        }
+        for epoch_prefix, source_prefix in epoch_start_modules.items():
+            if key.startswith(epoch_prefix):
+                source_key = source_prefix + key[len(epoch_prefix) :]
+                return source_key in ckpt_keys
+        return False
 
 
 class LocalPretrainedModel(PretrainedModel):

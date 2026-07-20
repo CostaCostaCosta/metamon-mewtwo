@@ -17,6 +17,7 @@ from metamon.rl.metamon_to_amago import (
     make_pokeagent_ladder_env,
     make_challenge_env,
 )
+from metamon.rl.ensemble_preview import run_showdown_with_ensemble_preview
 from metamon.rl.showdown_preview import run_showdown_with_preview, showdown_preview_url
 
 HEURISTIC_COMPOSITE_BASELINES = [
@@ -97,6 +98,7 @@ def _pretrained_on_ladder(
     step_preview_host: str = "127.0.0.1",
     step_preview_port: int = 7860,
     step_preview_share: bool = False,
+    ensemble_step_preview: bool = False,
     **ladder_kwargs,
 ) -> Dict[str, Any]:
     """Helper function for ladder-based evaluation."""
@@ -119,6 +121,19 @@ def _pretrained_on_ladder(
 
     if step_preview:
         return run_showdown_with_preview(
+            experiment=agent,
+            make_env=make_env,
+            observation_space=pretrained_model.observation_space,
+            action_space=pretrained_model.action_space,
+            timesteps=total_battles * 1000,
+            episodes=total_battles,
+            server_name=step_preview_host,
+            server_port=step_preview_port,
+            share=step_preview_share,
+        )
+
+    if ensemble_step_preview:
+        return run_showdown_with_ensemble_preview(
             experiment=agent,
             make_env=make_env,
             observation_space=pretrained_model.observation_space,
@@ -156,6 +171,7 @@ def pretrained_vs_local_ladder(
     step_preview_host: str = "127.0.0.1",
     step_preview_port: int = 7860,
     step_preview_share: bool = False,
+    ensemble_step_preview: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model on the ladder of your Local Showdown server.
 
@@ -188,6 +204,7 @@ def pretrained_vs_local_ladder(
         step_preview_host=step_preview_host,
         step_preview_port=step_preview_port,
         step_preview_share=step_preview_share,
+        ensemble_step_preview=ensemble_step_preview,
     )
 
 
@@ -210,6 +227,7 @@ def pretrained_vs_pokeagent_ladder(
     step_preview_host: str = "127.0.0.1",
     step_preview_port: int = 7860,
     step_preview_share: bool = False,
+    ensemble_step_preview: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model on the PokéAgent Challenge ladder.
 
@@ -243,6 +261,7 @@ def pretrained_vs_pokeagent_ladder(
         step_preview_host=step_preview_host,
         step_preview_port=step_preview_port,
         step_preview_share=step_preview_share,
+        ensemble_step_preview=ensemble_step_preview,
     )
 
 
@@ -266,6 +285,7 @@ def pretrained_vs_challenge(
     step_preview_host: str = "127.0.0.1",
     step_preview_port: int = 7860,
     step_preview_share: bool = False,
+    ensemble_step_preview: bool = False,
 ) -> Dict[str, Any]:
     """Evaluate a pretrained model by challenging a specific opponent by username.
 
@@ -304,6 +324,7 @@ def pretrained_vs_challenge(
         step_preview_host=step_preview_host,
         step_preview_port=step_preview_port,
         step_preview_share=step_preview_share,
+        ensemble_step_preview=ensemble_step_preview,
     )
 
 
@@ -362,9 +383,16 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
     pretrained_model = get_pretrained_model(args.agent)
     all_results = collections.defaultdict(list)
     backend = args.battle_backend or pretrained_model.battle_backend
-    if args.step and args.eval_type not in {"ladder", "pokeagent", "challenge"}:
+    if args.step and args.ensemble_step:
+        raise ValueError("--step and --ensemble_step cannot be used together")
+    if (args.step or args.ensemble_step) and args.eval_type not in {
+        "ladder",
+        "pokeagent",
+        "challenge",
+    }:
         raise ValueError(
-            "--step is only supported with --eval_type ladder, pokeagent, or challenge"
+            "--step and --ensemble_step are only supported with --eval_type "
+            "ladder, pokeagent, or challenge"
         )
 
     # Load team preview model if checkpoint provided
@@ -396,6 +424,13 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
         )
         if args.step_ui_share:
             print("  Step preview share link: enabled")
+    if args.ensemble_step:
+        print(
+            "  Ensemble preview UI: "
+            f"{showdown_preview_url(args.step_ui_host, args.step_ui_port)}"
+        )
+        if args.step_ui_share:
+            print("  Ensemble preview share link: enabled")
     print()
 
     for gen in args.gens:
@@ -428,6 +463,15 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
                     eval_kwargs.update(
                         {
                             "step_preview": True,
+                            "step_preview_host": args.step_ui_host,
+                            "step_preview_port": args.step_ui_port,
+                            "step_preview_share": args.step_ui_share,
+                        }
+                    )
+                if args.ensemble_step:
+                    eval_kwargs.update(
+                        {
+                            "ensemble_step_preview": True,
                             "step_preview_host": args.step_ui_host,
                             "step_preview_port": args.step_ui_port,
                             "step_preview_share": args.step_ui_share,
@@ -596,20 +640,33 @@ def add_cli(parser):
         ),
     )
     parser.add_argument(
+        "--ensemble_step",
+        action="store_true",
+        help=(
+            "Run Showdown evaluation through a Gradio UI for ensemble policy "
+            "decisions. "
+            "Shows member votes, proposer routing, judge weights, shortlist scores, "
+            "and the final ensemble action."
+        ),
+    )
+    parser.add_argument(
         "--step_ui_host",
         default="127.0.0.1",
-        help="Host/interface for the Gradio AI preview UI used by --step.",
+        help=(
+            "Host/interface for the Gradio AI preview UI used by "
+            "--step or --ensemble_step."
+        ),
     )
     parser.add_argument(
         "--step_ui_port",
         type=int,
         default=7860,
-        help="Port for the Gradio AI preview UI used by --step.",
+        help="Port for the Gradio AI preview UI used by --step or --ensemble_step.",
     )
     parser.add_argument(
         "--step_ui_share",
         action="store_true",
-        help="Create a public Gradio share link for the --step preview UI.",
+        help="Create a public Gradio share link for the step preview UI.",
     )
     return parser
 

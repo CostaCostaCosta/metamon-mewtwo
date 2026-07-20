@@ -1,4 +1,8 @@
 from typing import Optional, Any, Type
+from collections import deque
+from contextlib import contextmanager
+import copy
+import math
 import os
 import warnings
 
@@ -1536,7 +1540,11 @@ class MetamonAMAGODataset(RLDataset):
         return self._process_data(data)
 
     def _process_data(self, data):
-        obs, action_infos, rewards, dones = data
+        if len(data) == 5:
+            obs, action_infos, rewards, dones, belief_targets = data
+        else:
+            obs, action_infos, rewards, dones = data
+            belief_targets = None
         # amago expects discrete actions to be one-hot encoded
         num_actions = self.parsed_replay_dset.action_space.gym_space.n
         actions_torch = F.one_hot(
@@ -1563,6 +1571,8 @@ class MetamonAMAGODataset(RLDataset):
         # a bit of a hack: put action info in the amago observation dict, let the network ignore it,
         # and make it accessible to mask the actor/critic loss later on.
         obs_torch = {k: torch.from_numpy(np.stack(v, axis=0)) for k, v in obs.items()}
+        if belief_targets is not None:
+            obs_torch.update({k: v for k, v in belief_targets.items()})
         # add a final missing action to match the size of observations
         missing_acts = torch.tensor(action_infos["missing"] + [True]).unsqueeze(-1)
         obs_torch["missing_action_mask"] = missing_acts
@@ -1587,8 +1597,1259 @@ class MetamonAMAGOExperiment(amago.Experiment):
     Adds actions masking to the main AMAGO experiment, and leaves room for further tweaks.
     """
 
+    def __init__(
+        self,
+        *args,
+        critic_loss_weight: Optional[float] = None,
+        use_dynamic_damping: bool = False,
+        kl_coef_init: float = 0.05,
+        kl_coef_max: float = 0.5,
+        kl_power_alpha: float = 0.0,
+        kl_schedule_steps: int = 1_000_000,
+        ent_coef_init: float = 0.0,
+        ent_coef_min: float = 0.0,
+        ent_power_alpha: float = 0.0,
+        ent_schedule_steps: int = 1_000_000,
+        target_kl_per_step: float = 0.02,
+        target_kl_final: Optional[float] = None,
+        target_kl_schedule_steps: int = 0,
+        kl_tolerance: float = 1.5,
+        dd_adapt_interval: int = 100,
+        lr_shrink_factor: float = 0.5,
+        lr_grow_factor: float = 1.05,
+        lr_multiplier_min: Optional[float] = None,
+        lr_multiplier_max: Optional[float] = 1_000_000.0,
+        kl_coef_growth_factor: float = 1.5,
+        kl_coef_decay_factor: float = 0.95,
+        kl_multiplier_max: Optional[float] = 1_000_000.0,
+        min_lr: float = 0.0,
+        max_lr: Optional[float] = None,
+        lr_decay_steps: int = 0,
+        lr_final_multiplier: float = 1.0,
+        grad_clip_final: Optional[float] = None,
+        grad_clip_schedule_steps: int = 0,
+        ratio_clip_low: Optional[float] = None,
+        ratio_clip_high: Optional[float] = None,
+        ratio_clip_low_final: Optional[float] = None,
+        ratio_clip_high_final: Optional[float] = None,
+        ratio_clip_schedule_steps: int = 0,
+        ratio_clip_penalty_coeff: float = 0.0,
+        dd_kl_reference_mode: str = "epoch",
+        dd_kl_reference_update_interval: int = 1,
+        dd_controller_kl_metric: str = "local_window_kl",
+        log_global_anchor_kl: bool = False,
+        global_anchor_kl_controls_lr: bool = False,
+        global_anchor_kl_controls_coef: bool = False,
+        log_policy_health_metrics: bool = True,
+        use_ema: bool = False,
+        ema_decay: float = 0.999,
+        ema_update_interval: int = 1,
+        ema_warmup_steps: int = 0,
+        ema_eval_only: bool = True,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+
+        self.critic_loss_weight_override = critic_loss_weight
+
+        self.use_dynamic_damping = use_dynamic_damping
+        self.kl_coef_init = kl_coef_init
+        self.kl_coef_max = kl_coef_max
+        self.kl_power_alpha = kl_power_alpha
+        self.kl_schedule_steps = kl_schedule_steps
+        self.ent_coef_init = ent_coef_init
+        self.ent_coef_min = ent_coef_min
+        self.ent_power_alpha = ent_power_alpha
+        self.ent_schedule_steps = ent_schedule_steps
+        self.target_kl_per_step = target_kl_per_step
+        self.target_kl_final = target_kl_final
+        self.target_kl_schedule_steps = target_kl_schedule_steps
+        self.kl_tolerance = kl_tolerance
+        self.dd_adapt_interval = max(1, int(dd_adapt_interval))
+        self.lr_shrink_factor = lr_shrink_factor
+        self.lr_grow_factor = lr_grow_factor
+        self.lr_multiplier_min = lr_multiplier_min
+        self.lr_multiplier_max = lr_multiplier_max
+        self.kl_coef_growth_factor = kl_coef_growth_factor
+        self.kl_coef_decay_factor = kl_coef_decay_factor
+        self.kl_multiplier_max = kl_multiplier_max
+        self.min_lr = min_lr
+        self.max_lr = max_lr
+        self.lr_decay_steps = lr_decay_steps
+        self.lr_final_multiplier = lr_final_multiplier
+        self.grad_clip_final = grad_clip_final
+        self.grad_clip_schedule_steps = grad_clip_schedule_steps
+        self.ratio_clip_low = ratio_clip_low
+        self.ratio_clip_high = ratio_clip_high
+        self.ratio_clip_low_final = ratio_clip_low_final
+        self.ratio_clip_high_final = ratio_clip_high_final
+        self.ratio_clip_schedule_steps = ratio_clip_schedule_steps
+        self.ratio_clip_penalty_coeff = ratio_clip_penalty_coeff
+        self.dd_kl_reference_mode = dd_kl_reference_mode.lower()
+        if self.dd_kl_reference_mode not in {"epoch", "interval"}:
+            raise ValueError(
+                "dd_kl_reference_mode must be one of {'epoch', 'interval'}; "
+                f"got {dd_kl_reference_mode!r}"
+            )
+        self.dd_kl_reference_update_interval = max(
+            1, int(dd_kl_reference_update_interval)
+        )
+        self.dd_controller_kl_metric = dd_controller_kl_metric.lower()
+        if self.dd_controller_kl_metric not in {
+            "local_kl",
+            "local_window_kl",
+            "global_anchor_kl",
+        }:
+            raise ValueError(
+                "dd_controller_kl_metric must be one of "
+                "{'local_kl', 'local_window_kl', 'global_anchor_kl'}; "
+                f"got {dd_controller_kl_metric!r}"
+            )
+        self.log_global_anchor_kl = log_global_anchor_kl
+        self.global_anchor_kl_controls_lr = global_anchor_kl_controls_lr
+        self.global_anchor_kl_controls_coef = global_anchor_kl_controls_coef
+        self.log_policy_health_metrics = log_policy_health_metrics
+
+        self.use_ema = use_ema
+        self.ema_decay = ema_decay
+        self.ema_update_interval = max(1, int(ema_update_interval))
+        self.ema_warmup_steps = ema_warmup_steps
+        self.ema_eval_only = ema_eval_only
+
+        self._dd_kl_window = deque(maxlen=self.dd_adapt_interval)
+        self._dd_global_anchor_kl_window = deque(maxlen=self.dd_adapt_interval)
+        self._dd_kl_multiplier = 1.0
+        self._dd_lr_multiplier = 1.0
+        self._dd_last_window_kl: Optional[float] = None
+        self._dd_last_local_kl: Optional[float] = None
+        self._dd_last_local_window_kl: Optional[float] = None
+        self._dd_last_global_anchor_kl: Optional[float] = None
+        self._dd_last_global_anchor_window_kl: Optional[float] = None
+        self._dd_last_action = "init"
+        self._dd_lr_multiplier_clip_count = 0
+        self._dd_kl_multiplier_clip_count = 0
+        self._dd_nonfinite_kl_count = 0
+        self._update_control_ref: Optional[nn.ModuleDict] = None
+        self._global_anchor_ref: Optional[nn.ModuleDict] = None
+        self._fixed_base_anchor_ref: Optional[nn.ModuleDict] = None
+        self._dd_local_ref_refresh_count = 0
+        self._dd_global_anchor_refresh_count = 0
+        self._dd_fixed_base_anchor_refresh_count = 0
+        self._dd_last_local_ref_step = 0
+        self._dd_last_global_anchor_step = 0
+        self._dd_last_fixed_base_anchor_step = 0
+        self._dd_last_fixed_base_anchor_kl: Optional[float] = None
+        self._dd_last_fixed_base_anchor_eval_kl: Optional[float] = None
+        self._ema_policy_heads: Optional[nn.ModuleDict] = None
+
     def start(self):
         super().start()
+
+    @staticmethod
+    def _linear_schedule(start: float, end: float, steps: int, step: int) -> float:
+        if steps <= 0:
+            return start
+        pct = min(max(step / steps, 0.0), 1.0)
+        return start + pct * (end - start)
+
+    def _current_target_kl(self) -> float:
+        target_final = (
+            self.target_kl_per_step
+            if self.target_kl_final is None
+            else self.target_kl_final
+        )
+        return self._linear_schedule(
+            self.target_kl_per_step,
+            target_final,
+            self.target_kl_schedule_steps,
+            self.grad_update_counter,
+        )
+
+    def _current_kl_coef(self) -> float:
+        self._sanitize_dynamic_damping_multipliers()
+        step = self.grad_update_counter
+        scale = (1.0 + step / max(1, self.kl_schedule_steps)) ** (
+            -self.kl_power_alpha
+        )
+        return min(self.kl_coef_init * scale * self._dd_kl_multiplier, self.kl_coef_max)
+
+    def _current_ent_coef(self) -> float:
+        step = self.grad_update_counter
+        scale = (1.0 + step / max(1, self.ent_schedule_steps)) ** (
+            -self.ent_power_alpha
+        )
+        return max(self.ent_coef_init * scale, self.ent_coef_min)
+
+    def _current_ratio_clip(self) -> Optional[tuple[float, float]]:
+        if self.ratio_clip_low is None or self.ratio_clip_high is None:
+            return None
+        low_final = (
+            self.ratio_clip_low
+            if self.ratio_clip_low_final is None
+            else self.ratio_clip_low_final
+        )
+        high_final = (
+            self.ratio_clip_high
+            if self.ratio_clip_high_final is None
+            else self.ratio_clip_high_final
+        )
+        return (
+            self._linear_schedule(
+                self.ratio_clip_low,
+                low_final,
+                self.ratio_clip_schedule_steps,
+                self.grad_update_counter,
+            ),
+            self._linear_schedule(
+                self.ratio_clip_high,
+                high_final,
+                self.ratio_clip_schedule_steps,
+                self.grad_update_counter,
+            ),
+        )
+
+    def _current_grad_clip(self) -> float:
+        if self.grad_clip_final is None:
+            return self.grad_clip
+        return self._linear_schedule(
+            self.grad_clip,
+            self.grad_clip_final,
+            self.grad_clip_schedule_steps,
+            self.grad_update_counter,
+        )
+
+    def _current_lr_decay_multiplier(self) -> float:
+        return self._linear_schedule(
+            1.0,
+            self.lr_final_multiplier,
+            self.lr_decay_steps,
+            self.grad_update_counter,
+        )
+
+    def _sanitize_multiplier(
+        self,
+        value: float,
+        *,
+        min_value: Optional[float],
+        max_value: Optional[float],
+        fallback: float,
+    ) -> tuple[float, bool]:
+        clipped = False
+        if not math.isfinite(value):
+            if value == float("inf") and max_value is not None:
+                value = max_value
+            elif value == float("-inf") and min_value is not None:
+                value = min_value
+            else:
+                value = fallback
+            clipped = True
+        if min_value is not None and value < min_value:
+            value = min_value
+            clipped = True
+        if max_value is not None and value > max_value:
+            value = max_value
+            clipped = True
+        return value, clipped
+
+    def _sanitize_dynamic_damping_multipliers(self):
+        if not self.use_dynamic_damping:
+            return
+        lr_multiplier, lr_clipped = self._sanitize_multiplier(
+            float(self._dd_lr_multiplier),
+            min_value=self.lr_multiplier_min,
+            max_value=self.lr_multiplier_max,
+            fallback=(
+                self.lr_multiplier_min
+                if self.lr_multiplier_min is not None
+                else 1.0
+            ),
+        )
+        kl_multiplier, kl_clipped = self._sanitize_multiplier(
+            float(self._dd_kl_multiplier),
+            min_value=0.0,
+            max_value=self.kl_multiplier_max,
+            fallback=1.0,
+        )
+        if lr_clipped:
+            self._dd_lr_multiplier_clip_count += 1
+            self._dd_last_action = f"{self._dd_last_action}+lr_clip"
+        if kl_clipped:
+            self._dd_kl_multiplier_clip_count += 1
+            self._dd_last_action = f"{self._dd_last_action}+kl_clip"
+        self._dd_lr_multiplier = lr_multiplier
+        self._dd_kl_multiplier = kl_multiplier
+
+    @staticmethod
+    def _clone_policy_heads(policy) -> nn.ModuleDict:
+        modules = {
+            "tstep_encoder": copy.deepcopy(policy.tstep_encoder),
+            "traj_encoder": copy.deepcopy(policy.traj_encoder),
+            "actor": copy.deepcopy(policy.actor),
+        }
+        belief_head = getattr(policy, "belief_head", None)
+        if belief_head is not None:
+            modules["belief_head"] = copy.deepcopy(belief_head)
+        heads = nn.ModuleDict(modules)
+        heads.eval()
+        heads.requires_grad_(False)
+        return heads
+
+    def _load_policy_heads_from(self, heads: nn.ModuleDict):
+        policy = self.policy
+        policy.tstep_encoder.load_state_dict(heads["tstep_encoder"].state_dict())
+        policy.traj_encoder.load_state_dict(heads["traj_encoder"].state_dict())
+        policy.actor.load_state_dict(heads["actor"].state_dict())
+        if "belief_head" in heads and getattr(policy, "belief_head", None) is not None:
+            policy.belief_head.load_state_dict(heads["belief_head"].state_dict())
+
+    @contextmanager
+    def _policy_heads_eval_mode(self):
+        modules = [
+            self.policy.tstep_encoder,
+            self.policy.traj_encoder,
+            self.policy.actor,
+        ]
+        belief_head = getattr(self.policy, "belief_head", None)
+        if belief_head is not None:
+            modules.append(belief_head)
+        previous_modes = [module.training for module in modules]
+        try:
+            for module in modules:
+                module.eval()
+            yield
+        finally:
+            for module, was_training in zip(modules, previous_modes):
+                module.train(was_training)
+
+    def _refresh_update_control_reference(self):
+        if not self.use_dynamic_damping:
+            return
+        self._update_control_ref = self._clone_policy_heads(self.policy)
+        self._dd_local_ref_refresh_count += 1
+        self._dd_last_local_ref_step = int(self.grad_update_counter)
+        self._dd_kl_window.clear()
+
+    def _refresh_global_anchor_reference(self):
+        if not self.use_dynamic_damping:
+            return
+        if not (
+            self.log_global_anchor_kl
+            or self.global_anchor_kl_controls_lr
+            or self.global_anchor_kl_controls_coef
+            or self.dd_controller_kl_metric == "global_anchor_kl"
+        ):
+            return
+        self._global_anchor_ref = self._clone_policy_heads(self.policy)
+        self._dd_global_anchor_refresh_count += 1
+        self._dd_last_global_anchor_step = int(self.grad_update_counter)
+        self._dd_global_anchor_kl_window.clear()
+
+    def _refresh_fixed_base_anchor_reference(self):
+        self._fixed_base_anchor_ref = self._clone_policy_heads(self.policy)
+        self._dd_fixed_base_anchor_refresh_count += 1
+        self._dd_last_fixed_base_anchor_step = int(self.grad_update_counter)
+        self._dd_last_fixed_base_anchor_kl = None
+        self._dd_last_fixed_base_anchor_eval_kl = None
+
+    def _maybe_refresh_update_control_reference_after_update(self):
+        if not self.use_dynamic_damping:
+            return
+        if self.dd_kl_reference_mode != "interval":
+            return
+        if self.grad_update_counter <= 0:
+            return
+        if self.grad_update_counter % self.dd_kl_reference_update_interval == 0:
+            self._refresh_update_control_reference()
+
+    def _init_ema_policy_heads(self):
+        if self.use_ema and self._ema_policy_heads is None:
+            self._ema_policy_heads = self._clone_policy_heads(self.policy)
+
+    @torch.no_grad()
+    def _update_ema_policy_heads(self):
+        if not self.use_ema:
+            return
+        if self.grad_update_counter < self.ema_warmup_steps:
+            return
+        if self.grad_update_counter % self.ema_update_interval != 0:
+            return
+        self._init_ema_policy_heads()
+        assert self._ema_policy_heads is not None
+        policy_heads = {
+            "tstep_encoder": self.policy.tstep_encoder,
+            "traj_encoder": self.policy.traj_encoder,
+            "actor": self.policy.actor,
+        }
+        alpha = 1.0 - self.ema_decay
+        for name, ema_module in self._ema_policy_heads.items():
+            current_state = policy_heads[name].state_dict()
+            ema_state = ema_module.state_dict()
+            for key, ema_tensor in ema_state.items():
+                current_tensor = current_state[key].detach()
+                if ema_tensor.is_floating_point():
+                    ema_tensor.lerp_(current_tensor, alpha)
+                else:
+                    ema_tensor.copy_(current_tensor)
+
+    @contextmanager
+    def _maybe_ema_eval_weights(self):
+        if (
+            not self.use_ema
+            or not self.ema_eval_only
+            or self._ema_policy_heads is None
+        ):
+            yield
+            return
+        current_heads = self._clone_policy_heads(self.policy)
+        try:
+            self._load_policy_heads_from(self._ema_policy_heads)
+            yield
+        finally:
+            self._load_policy_heads_from(current_heads)
+
+    def _save_ema_checkpoint(self):
+        if not self.use_ema or self._ema_policy_heads is None:
+            return
+        if not self.accelerator.is_main_process:
+            return
+        ema_dir = os.path.join(self.ckpt_dir, "ema_policy_heads")
+        os.makedirs(ema_dir, exist_ok=True)
+        torch.save(
+            self._ema_policy_heads.state_dict(),
+            os.path.join(ema_dir, f"policy_epoch_{self.epoch}.pt"),
+        )
+
+    def _apply_lr_controls(self):
+        if not hasattr(self, "optimizer") or not hasattr(self, "lr_schedule"):
+            return
+        self._sanitize_dynamic_damping_multipliers()
+        scheduled_lrs = self.lr_schedule.get_last_lr()
+        decay = self._current_lr_decay_multiplier()
+        for group, scheduled_lr in zip(self.optimizer.param_groups, scheduled_lrs):
+            lr = scheduled_lr * self._dd_lr_multiplier * decay
+            lr = max(lr, self.min_lr)
+            if self.max_lr is not None:
+                lr = min(lr, self.max_lr)
+            group["lr"] = lr
+
+    def _control_action_for_kl(self, window_kl: float) -> str:
+        target = max(self._current_target_kl(), 1e-12)
+        if window_kl > self.kl_tolerance * target:
+            return "brake"
+        if window_kl < target / self.kl_tolerance:
+            return "relax"
+        return "hold"
+
+    def _adapt_update_control(
+        self,
+        observed_local_kl: Optional[torch.Tensor],
+        observed_global_anchor_kl: Optional[torch.Tensor] = None,
+    ):
+        if not self.use_dynamic_damping or observed_local_kl is None:
+            return
+        local_kl_value = float(observed_local_kl.detach().float().cpu())
+        global_kl_value = (
+            None
+            if observed_global_anchor_kl is None
+            else float(observed_global_anchor_kl.detach().float().cpu())
+        )
+        self._dd_last_local_kl = local_kl_value if math.isfinite(local_kl_value) else None
+        self._dd_last_global_anchor_kl = (
+            global_kl_value
+            if global_kl_value is not None and math.isfinite(global_kl_value)
+            else None
+        )
+
+        controller_kl_value = (
+            global_kl_value
+            if self.dd_controller_kl_metric == "global_anchor_kl"
+            else local_kl_value
+        )
+        if controller_kl_value is None or not math.isfinite(controller_kl_value):
+            self._dd_nonfinite_kl_count += 1
+            self._dd_last_action = "invalid_kl"
+            self._sanitize_dynamic_damping_multipliers()
+            return
+        if not math.isfinite(local_kl_value):
+            self._dd_nonfinite_kl_count += 1
+            self._dd_last_action = "invalid_kl"
+            self._sanitize_dynamic_damping_multipliers()
+            return
+
+        self._dd_kl_window.append(local_kl_value)
+        if global_kl_value is not None and math.isfinite(global_kl_value):
+            self._dd_global_anchor_kl_window.append(global_kl_value)
+
+        if len(self._dd_kl_window) < self.dd_adapt_interval:
+            return
+        if self.grad_update_counter % self.dd_adapt_interval != 0:
+            return
+
+        local_window_kl = sum(self._dd_kl_window) / len(self._dd_kl_window)
+        self._dd_last_local_window_kl = local_window_kl
+        global_window_kl = None
+        if self._dd_global_anchor_kl_window:
+            global_window_kl = sum(self._dd_global_anchor_kl_window) / len(
+                self._dd_global_anchor_kl_window
+            )
+            self._dd_last_global_anchor_window_kl = global_window_kl
+
+        controller_window_kl = (
+            global_window_kl
+            if self.dd_controller_kl_metric == "global_anchor_kl"
+            and global_window_kl is not None
+            else local_window_kl
+        )
+        self._dd_last_window_kl = controller_window_kl
+        controller_action = self._control_action_for_kl(controller_window_kl)
+
+        lr_window_kl = (
+            global_window_kl
+            if self.global_anchor_kl_controls_lr and global_window_kl is not None
+            else controller_window_kl
+        )
+        kl_coef_window_kl = (
+            global_window_kl
+            if self.global_anchor_kl_controls_coef and global_window_kl is not None
+            else controller_window_kl
+        )
+        lr_action = self._control_action_for_kl(lr_window_kl)
+        kl_coef_action = self._control_action_for_kl(kl_coef_window_kl)
+
+        if lr_action == "brake":
+            self._dd_lr_multiplier *= self.lr_shrink_factor
+        elif lr_action == "relax":
+            self._dd_lr_multiplier *= self.lr_grow_factor
+
+        if kl_coef_action == "brake":
+            self._dd_kl_multiplier *= self.kl_coef_growth_factor
+        elif kl_coef_action == "relax":
+            self._dd_kl_multiplier *= self.kl_coef_decay_factor
+
+        self._dd_last_action = controller_action
+        self._sanitize_dynamic_damping_multipliers()
+
+    def _update_control_state_info(self) -> dict[str, Any]:
+        if not self.use_dynamic_damping:
+            return {
+                "Damping/Enabled": 0.0,
+                "Damping/LR Decay Multiplier": self._current_lr_decay_multiplier(),
+            }
+        self._sanitize_dynamic_damping_multipliers()
+        ratio_clip = self._current_ratio_clip()
+        base_action = self._dd_last_action.split("+", maxsplit=1)[0]
+        action_code = {
+            "relax": -1.0,
+            "hold": 0.0,
+            "brake": 1.0,
+            "invalid_kl": 2.0,
+        }.get(base_action, 0.0)
+        info = {
+            "Damping/Enabled": 1.0,
+            "Damping/KL Coefficient": self._current_kl_coef(),
+            "Damping/Entropy Coefficient": self._current_ent_coef(),
+            "Damping/Target KL": self._current_target_kl(),
+            "Damping/Local KL Target": self._current_target_kl(),
+            "Damping/LR Multiplier": self._dd_lr_multiplier,
+            "Damping/LR Multiplier Min": (
+                0.0 if self.lr_multiplier_min is None else self.lr_multiplier_min
+            ),
+            "Damping/LR Decay Multiplier": self._current_lr_decay_multiplier(),
+            "Damping/KL Multiplier": self._dd_kl_multiplier,
+            "Damping/LR Multiplier Clips": self._dd_lr_multiplier_clip_count,
+            "Damping/KL Multiplier Clips": self._dd_kl_multiplier_clip_count,
+            "Damping/Nonfinite KL Count": self._dd_nonfinite_kl_count,
+            "Damping/Window KL": (
+                0.0 if self._dd_last_window_kl is None else self._dd_last_window_kl
+            ),
+            "Damping/Local Window KL": (
+                0.0
+                if self._dd_last_local_window_kl is None
+                else self._dd_last_local_window_kl
+            ),
+            "Damping/Last Local KL": (
+                0.0 if self._dd_last_local_kl is None else self._dd_last_local_kl
+            ),
+            "Damping/Global Anchor Window KL": (
+                0.0
+                if self._dd_last_global_anchor_window_kl is None
+                else self._dd_last_global_anchor_window_kl
+            ),
+            "Damping/Last Global Anchor KL": (
+                0.0
+                if self._dd_last_global_anchor_kl is None
+                else self._dd_last_global_anchor_kl
+            ),
+            "Damping/Local Reference Refreshes": self._dd_local_ref_refresh_count,
+            "Damping/Local Reference Step": self._dd_last_local_ref_step,
+            "Damping/Global Anchor Refreshes": self._dd_global_anchor_refresh_count,
+            "Damping/Global Anchor Step": self._dd_last_global_anchor_step,
+            "Retention/Base Anchor Refreshes": self._dd_fixed_base_anchor_refresh_count,
+            "Retention/Base Anchor Step": self._dd_last_fixed_base_anchor_step,
+            "Retention/Last Base Anchor KL": (
+                0.0
+                if self._dd_last_fixed_base_anchor_kl is None
+                else self._dd_last_fixed_base_anchor_kl
+            ),
+            "Retention/Last Base Anchor Eval KL": (
+                0.0
+                if self._dd_last_fixed_base_anchor_eval_kl is None
+                else self._dd_last_fixed_base_anchor_eval_kl
+            ),
+            "Retention/Fixed Base Anchor Refreshes": (
+                self._dd_fixed_base_anchor_refresh_count
+            ),
+            "Retention/Fixed Base Anchor Step": self._dd_last_fixed_base_anchor_step,
+            "Retention/Last Fixed Base Anchor KL": (
+                0.0
+                if self._dd_last_fixed_base_anchor_kl is None
+                else self._dd_last_fixed_base_anchor_kl
+            ),
+            "Retention/Last Fixed Base Anchor Eval KL": (
+                0.0
+                if self._dd_last_fixed_base_anchor_eval_kl is None
+                else self._dd_last_fixed_base_anchor_eval_kl
+            ),
+            "Damping/Reference Mode Interval": (
+                1.0 if self.dd_kl_reference_mode == "interval" else 0.0
+            ),
+            "Damping/Reference Update Interval": (
+                self.dd_kl_reference_update_interval
+            ),
+            "Damping/Global Anchor Controls LR": (
+                1.0 if self.global_anchor_kl_controls_lr else 0.0
+            ),
+            "Damping/Global Anchor Controls Coef": (
+                1.0 if self.global_anchor_kl_controls_coef else 0.0
+            ),
+            "Damping/Action Code": action_code,
+        }
+        if ratio_clip is not None:
+            info["Damping/Ratio Clip Low"] = ratio_clip[0]
+            info["Damping/Ratio Clip High"] = ratio_clip[1]
+        return info
+
+    def _masked_zero(self, device: torch.device) -> torch.Tensor:
+        return torch.zeros((), device=device)
+
+    @staticmethod
+    def _renormalize_probs_over_legal_actions(
+        probs: torch.Tensor, legal_action_mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        tiny = torch.finfo(probs.dtype).tiny
+        legal = legal_action_mask.to(dtype=probs.dtype)
+        masked_probs = probs * legal
+        masked_probs = masked_probs / masked_probs.sum(
+            dim=-1, keepdim=True
+        ).clamp_min(tiny)
+        log_probs = torch.log(masked_probs.clamp_min(tiny))
+        masked_probs = torch.where(
+            legal_action_mask, masked_probs, torch.zeros_like(masked_probs)
+        )
+        log_probs = torch.where(
+            legal_action_mask, log_probs, torch.zeros_like(log_probs)
+        )
+        return masked_probs, log_probs
+
+    @staticmethod
+    def _reverse_kl_from_log_probs(
+        current_probs: torch.Tensor,
+        current_log_probs: torch.Tensor,
+        ref_log_probs: torch.Tensor,
+    ) -> torch.Tensor:
+        return (
+            current_probs * (current_log_probs - ref_log_probs)
+        ).sum(dim=-1, keepdim=True)
+
+    @torch.no_grad()
+    def _reference_policy_probs(
+        self,
+        ref_heads: nn.ModuleDict,
+        batch: Batch,
+        straight_from_obs: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        ref_o = ref_heads["tstep_encoder"](obs=batch.obs, rl2s=batch.rl2s)
+        ref_s, _ = ref_heads["traj_encoder"](
+            seq=ref_o, time_idxs=batch.time_idxs, hidden_state=None
+        )
+        if "belief_head" in ref_heads:
+            belief_outputs = ref_heads["belief_head"](ref_s)
+            ref_s = torch.cat((ref_s, belief_outputs.actor_embedding), dim=-1)
+        ref_dist = ref_heads["actor"](
+            ref_s,
+            straight_from_obs=straight_from_obs,
+        )
+        return ref_dist.probs
+
+    @torch.no_grad()
+    def _current_policy_eval_probs(
+        self,
+        batch: Batch,
+        straight_from_obs: dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        with self._policy_heads_eval_mode():
+            eval_o = self.policy.tstep_encoder(obs=batch.obs, rl2s=batch.rl2s)
+            eval_s, _ = self.policy.traj_encoder(
+                seq=eval_o, time_idxs=batch.time_idxs, hidden_state=None
+            )
+            if hasattr(self.policy, "actor_state_for_policy"):
+                eval_s = self.policy.actor_state_for_policy(eval_s)
+            eval_dist = self.policy.actor(
+                eval_s,
+                straight_from_obs=straight_from_obs,
+            )
+        return eval_dist.probs
+
+    def _compute_update_control_loss(
+        self, batch: Batch, log_step: bool
+    ) -> tuple[
+        torch.Tensor,
+        dict[str, Any],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+    ]:
+        should_run = self.use_dynamic_damping or (
+            log_step and self.log_policy_health_metrics
+        )
+        device = batch.rl2s.device
+        if not should_run:
+            return self._masked_zero(device), {}, None, None
+        if self.use_dynamic_damping and self._update_control_ref is None:
+            self._refresh_update_control_reference()
+        if (
+            self.use_dynamic_damping
+            and self._global_anchor_ref is None
+            and (
+                self.log_global_anchor_kl
+                or self.global_anchor_kl_controls_lr
+                or self.global_anchor_kl_controls_coef
+                or self.dd_controller_kl_metric == "global_anchor_kl"
+            )
+        ):
+            self._refresh_global_anchor_reference()
+
+        policy = self.policy
+        straight_from_obs = {k: batch.obs[k] for k in policy.pass_obs_keys_to_actor}
+        current_o = policy.tstep_encoder(obs=batch.obs, rl2s=batch.rl2s)
+        current_s, _ = policy.traj_encoder(
+            seq=current_o, time_idxs=batch.time_idxs, hidden_state=None
+        )
+        current_actor_s = (
+            policy.actor_state_for_policy(current_s)
+            if hasattr(policy, "actor_state_for_policy")
+            else current_s
+        )
+        current_dist = policy.actor(
+            current_actor_s,
+            straight_from_obs=straight_from_obs,
+        )
+
+        current_probs = current_dist.probs
+        current_log_probs = torch.log(
+            current_probs.clamp_min(torch.finfo(current_probs.dtype).tiny)
+        )
+        B, L, G, N = current_probs.shape
+        state_mask = (~((batch.rl2s == MAGIC_PAD_VAL).all(-1, keepdim=True))).bool()[
+            :, 1:, ...
+        ]
+        valid_mask = einops.repeat(state_mask, "b l 1 -> b l g 1", g=G)
+        valid_mask = policy.edit_actor_mask(
+            batch,
+            torch.zeros((B, L - 1, G, 1), device=device),
+            valid_mask,
+        )
+
+        entropy_elems = -(current_probs * current_log_probs).sum(
+            dim=-1, keepdim=True
+        )[:, :-1, ...]
+        entropy_mean = amago.utils.masked_avg(entropy_elems, valid_mask)
+        sorted_log_probs = torch.topk(current_log_probs[:, :-1, ...], 2, dim=-1).values
+        logit_margin = (sorted_log_probs[..., 0] - sorted_log_probs[..., 1]).unsqueeze(
+            -1
+        )
+        top1_prob = current_probs[:, :-1, ...].max(dim=-1, keepdim=True).values
+        no_options = batch.obs["illegal_actions"][:, :-1, :].all(
+            dim=-1, keepdim=True
+        )
+        raw_illegal = batch.obs["illegal_actions"][:, :-1, :].unsqueeze(-2).expand(
+            B, L - 1, G, N
+        )
+        no_options_expanded = no_options.unsqueeze(-2)
+        illegal = torch.logical_and(raw_illegal, ~no_options_expanded)
+        legal_action_mask = torch.logical_or(~raw_illegal, no_options_expanded)
+        invalid_mass = (current_probs[:, :-1, ...] * illegal.float()).sum(
+            dim=-1, keepdim=True
+        )
+
+        metrics: dict[str, Any] = {}
+        total_control_loss = self._masked_zero(device)
+        observed_local_kl = None
+        observed_global_anchor_kl = None
+        observed_fixed_base_anchor_kl = None
+        fixed_base_kl_elems = None
+        local_current_probs = None
+        local_current_log_probs = None
+
+        needs_legal_current_probs = (
+            self.use_dynamic_damping and self._update_control_ref is not None
+        ) or self._fixed_base_anchor_ref is not None
+        if needs_legal_current_probs:
+            local_current_probs, local_current_log_probs = (
+                self._renormalize_probs_over_legal_actions(
+                    current_probs[:, :-1, ...], legal_action_mask
+                )
+            )
+
+        if self.use_dynamic_damping and self._update_control_ref is not None:
+            ref_probs = self._reference_policy_probs(
+                self._update_control_ref, batch, straight_from_obs
+            )
+            assert local_current_probs is not None
+            assert local_current_log_probs is not None
+            _, local_ref_log_probs = (
+                self._renormalize_probs_over_legal_actions(
+                    ref_probs[:, :-1, ...], legal_action_mask
+                )
+            )
+            kl_elems = self._reverse_kl_from_log_probs(
+                local_current_probs, local_current_log_probs, local_ref_log_probs
+            )
+            kl_mean = amago.utils.masked_avg(kl_elems, valid_mask)
+            observed_local_kl = kl_mean.detach()
+            total_control_loss = total_control_loss + self._current_kl_coef() * kl_mean
+            total_control_loss = total_control_loss - self._current_ent_coef() * entropy_mean
+
+            global_kl_elems = None
+            if self._global_anchor_ref is not None:
+                global_ref_probs = self._reference_policy_probs(
+                    self._global_anchor_ref, batch, straight_from_obs
+                )
+                _, global_ref_log_probs = self._renormalize_probs_over_legal_actions(
+                    global_ref_probs[:, :-1, ...], legal_action_mask
+                )
+                global_kl_elems = self._reverse_kl_from_log_probs(
+                    local_current_probs,
+                    local_current_log_probs,
+                    global_ref_log_probs,
+                )
+                observed_global_anchor_kl = amago.utils.masked_avg(
+                    global_kl_elems, valid_mask
+                ).detach()
+
+            ratio_clip = self._current_ratio_clip()
+            if (
+                ratio_clip is not None
+                and self.ratio_clip_penalty_coeff > 0.0
+                and batch.actions.shape[-1] == N
+            ):
+                actions = batch.actions.clamp(0, 1.0).unsqueeze(-2)
+                current_action_prob = (
+                    current_probs[:, :-1, ...] * actions
+                ).sum(dim=-1, keepdim=True)
+                ref_action_prob = (ref_probs[:, :-1, ...] * actions).sum(
+                    dim=-1, keepdim=True
+                )
+                ratio = current_action_prob / ref_action_prob.clamp_min(1e-8)
+                low, high = ratio_clip
+                ratio_excess = F.relu(ratio - high) + F.relu(low - ratio)
+                ratio_clip_loss = self.ratio_clip_penalty_coeff * amago.utils.masked_avg(
+                    ratio_excess, valid_mask
+                )
+                total_control_loss = total_control_loss + ratio_clip_loss
+            if log_step:
+                    metrics["Ratio Clip Loss"] = ratio_clip_loss.detach()
+                    metrics["Ratio Mean"] = amago.utils.masked_avg(
+                        ratio, valid_mask
+                    ).detach()
+                    metrics["Ratio Pct Low"] = amago.utils.masked_avg(
+                        (ratio < low).float(), valid_mask
+                    ).detach()
+                    metrics["Ratio Pct High"] = amago.utils.masked_avg(
+                        (ratio > high).float(), valid_mask
+                    ).detach()
+
+            if log_step:
+                metrics["KL Divergence"] = kl_mean.detach()
+                metrics["Damping/Local KL"] = kl_mean.detach()
+                metrics["Damping/Local KL Target"] = torch.tensor(
+                    self._current_target_kl(), device=device
+                )
+                if observed_global_anchor_kl is not None:
+                    metrics["Damping/Global Anchor KL"] = observed_global_anchor_kl
+                metrics["KL P95"] = self._masked_quantile(
+                    kl_elems, valid_mask, 0.95
+                ).detach()
+                metrics["KL P99"] = self._masked_quantile(
+                    kl_elems, valid_mask, 0.99
+                ).detach()
+                if global_kl_elems is not None:
+                    metrics["Damping/Global Anchor KL P95"] = self._masked_quantile(
+                        global_kl_elems, valid_mask, 0.95
+                    ).detach()
+                    metrics["Damping/Global Anchor KL P99"] = self._masked_quantile(
+                        global_kl_elems, valid_mask, 0.99
+                    ).detach()
+                metrics["Update Control Loss"] = total_control_loss.detach()
+
+        if self._fixed_base_anchor_ref is not None:
+            assert local_current_probs is not None
+            assert local_current_log_probs is not None
+            fixed_base_ref_probs = self._reference_policy_probs(
+                self._fixed_base_anchor_ref, batch, straight_from_obs
+            )
+            _, fixed_base_ref_log_probs = self._renormalize_probs_over_legal_actions(
+                fixed_base_ref_probs[:, :-1, ...], legal_action_mask
+            )
+            fixed_base_kl_elems = self._reverse_kl_from_log_probs(
+                local_current_probs,
+                local_current_log_probs,
+                fixed_base_ref_log_probs,
+            )
+            observed_fixed_base_anchor_kl = amago.utils.masked_avg(
+                fixed_base_kl_elems, valid_mask
+            ).detach()
+            fixed_base_kl_value = float(
+                observed_fixed_base_anchor_kl.detach().float().cpu()
+            )
+            self._dd_last_fixed_base_anchor_kl = (
+                fixed_base_kl_value if math.isfinite(fixed_base_kl_value) else None
+            )
+            if log_step:
+                metrics["Retention/Base Anchor KL"] = observed_fixed_base_anchor_kl
+                metrics["Retention/Fixed Base Anchor KL"] = (
+                    observed_fixed_base_anchor_kl
+                )
+                metrics["Retention/Base Anchor Step"] = (
+                    self._dd_last_fixed_base_anchor_step
+                )
+                metrics["Retention/Fixed Base Anchor Step"] = (
+                    self._dd_last_fixed_base_anchor_step
+                )
+                metrics["Retention/Base Anchor Refreshes"] = (
+                    self._dd_fixed_base_anchor_refresh_count
+                )
+                metrics["Retention/Fixed Base Anchor Refreshes"] = (
+                    self._dd_fixed_base_anchor_refresh_count
+                )
+                metrics["Retention/Base Anchor KL P95"] = self._masked_quantile(
+                    fixed_base_kl_elems, valid_mask, 0.95
+                ).detach()
+                metrics["Retention/Fixed Base Anchor KL P95"] = (
+                    self._masked_quantile(fixed_base_kl_elems, valid_mask, 0.95).detach()
+                )
+                metrics["Retention/Base Anchor KL P99"] = self._masked_quantile(
+                    fixed_base_kl_elems, valid_mask, 0.99
+                ).detach()
+                metrics["Retention/Fixed Base Anchor KL P99"] = (
+                    self._masked_quantile(fixed_base_kl_elems, valid_mask, 0.99).detach()
+                )
+                eval_current_probs = self._current_policy_eval_probs(
+                    batch, straight_from_obs
+                )
+                eval_current_probs, eval_current_log_probs = (
+                    self._renormalize_probs_over_legal_actions(
+                        eval_current_probs[:, :-1, ...], legal_action_mask
+                    )
+                )
+                eval_base_kl_elems = self._reverse_kl_from_log_probs(
+                    eval_current_probs,
+                    eval_current_log_probs,
+                    fixed_base_ref_log_probs,
+                )
+                eval_base_kl = amago.utils.masked_avg(
+                    eval_base_kl_elems, valid_mask
+                ).detach()
+                eval_base_kl_value = float(eval_base_kl.detach().float().cpu())
+                self._dd_last_fixed_base_anchor_eval_kl = (
+                    eval_base_kl_value if math.isfinite(eval_base_kl_value) else None
+                )
+                metrics["Retention/Base Anchor Eval KL"] = eval_base_kl
+                metrics["Retention/Fixed Base Anchor Eval KL"] = eval_base_kl
+                metrics["Retention/Base Anchor Eval KL P95"] = self._masked_quantile(
+                    eval_base_kl_elems, valid_mask, 0.95
+                ).detach()
+                metrics["Retention/Fixed Base Anchor Eval KL P95"] = (
+                    self._masked_quantile(eval_base_kl_elems, valid_mask, 0.95).detach()
+                )
+                metrics["Retention/Base Anchor Eval KL P99"] = self._masked_quantile(
+                    eval_base_kl_elems, valid_mask, 0.99
+                ).detach()
+                metrics["Retention/Fixed Base Anchor Eval KL P99"] = (
+                    self._masked_quantile(eval_base_kl_elems, valid_mask, 0.99).detach()
+                )
+
+        if log_step:
+            metrics["Policy Entropy"] = entropy_mean.detach()
+            metrics["Policy Entropy P10"] = self._masked_quantile(
+                entropy_elems, valid_mask, 0.10
+            ).detach()
+            metrics["Policy Effective Support"] = entropy_mean.detach().exp()
+            metrics["Policy Top-1 Prob"] = amago.utils.masked_avg(
+                top1_prob, valid_mask
+            ).detach()
+            metrics["Policy Top-1 Logit Margin"] = amago.utils.masked_avg(
+                logit_margin, valid_mask
+            ).detach()
+            metrics["Invalid Action Prob Mass"] = amago.utils.masked_avg(
+                invalid_mass, valid_mask
+            ).detach()
+
+        return total_control_loss, metrics, observed_local_kl, observed_global_anchor_kl
+
+    def log_post_load_pre_train_diagnostics(self) -> dict[str, Any]:
+        """Log one KL/health row after external weight load and before updates."""
+        if not hasattr(self, "train_dloader"):
+            self.init_dloaders()
+        if self._fixed_base_anchor_ref is None:
+            self._refresh_fixed_base_anchor_reference()
+        if self.use_dynamic_damping and self._update_control_ref is None:
+            self._refresh_update_control_reference()
+        if (
+            self.use_dynamic_damping
+            and self._global_anchor_ref is None
+            and (
+                self.log_global_anchor_kl
+                or self.global_anchor_kl_controls_lr
+                or self.global_anchor_kl_controls_coef
+                or self.dd_controller_kl_metric == "global_anchor_kl"
+            )
+        ):
+            self._refresh_global_anchor_reference()
+
+        was_training = self.policy_aclr.training
+        self.policy_aclr.eval()
+        try:
+            batch = next(iter(self.train_dloader))
+            with torch.no_grad():
+                _, metrics, _, _ = self._compute_update_control_loss(
+                    batch, log_step=True
+                )
+        finally:
+            self.policy_aclr.train(was_training)
+
+        def metric_float(name: str) -> float:
+            value = metrics.get(name, 0.0)
+            if isinstance(value, torch.Tensor):
+                return float(value.detach().cpu().float())
+            return float(value)
+
+        diagnostics = {
+            "post_load_pre_train_local_kl": metric_float("Damping/Local KL"),
+            "post_load_pre_train_global_kl": metric_float(
+                "Damping/Global Anchor KL"
+            ),
+            "post_load_pre_train_base_anchor_kl": metric_float(
+                "Retention/Fixed Base Anchor KL"
+            ),
+            "post_load_pre_train_local_reference_step": self._dd_last_local_ref_step,
+            "post_load_pre_train_global_anchor_step": self._dd_last_global_anchor_step,
+            "post_load_pre_train_base_anchor_step": (
+                self._dd_last_fixed_base_anchor_step
+            ),
+            "post_load_pre_train_local_reference_refreshes": (
+                self._dd_local_ref_refresh_count
+            ),
+            "post_load_pre_train_global_anchor_refreshes": (
+                self._dd_global_anchor_refresh_count
+            ),
+            "post_load_pre_train_base_anchor_refreshes": (
+                self._dd_fixed_base_anchor_refresh_count
+            ),
+        }
+        self.accelerator.print("Post-load/pre-train diagnostics:")
+        for name, value in diagnostics.items():
+            if isinstance(value, float):
+                self.accelerator.print(f"  {name}: {value:.8g}")
+            else:
+                self.accelerator.print(f"  {name}: {value}")
+        self.log(diagnostics, key="post-load-pre-train")
+        return diagnostics
+
+    @staticmethod
+    def _masked_values(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        bool_mask = mask.bool()
+        while bool_mask.ndim < values.ndim:
+            bool_mask = bool_mask.unsqueeze(-1)
+        bool_mask = bool_mask.expand_as(values)
+        return values.detach()[bool_mask].float()
+
+    @classmethod
+    def _masked_quantile(
+        cls, values: torch.Tensor, mask: torch.Tensor, q: float
+    ) -> torch.Tensor:
+        masked = cls._masked_values(values, mask)
+        if masked.numel() == 0:
+            return torch.tensor(float("nan"), device=values.device)
+        return torch.quantile(masked, q)
+
+    def init_dloaders(self):
+        if hasattr(self, "policy_aclr"):
+            policy = self.policy
+            if hasattr(policy, "refresh_epoch_start_anchor"):
+                policy.refresh_epoch_start_anchor()
+            self._refresh_global_anchor_reference()
+            self._refresh_update_control_reference()
+        return super().init_dloaders()
+
+    def _lapras_tauros_eval_enabled(self) -> bool:
+        return bool(getattr(self, "lapras_tauros_eval", False))
+
+    def _maybe_eval_lapras_vs_taurosv0(self):
+        if not self._lapras_tauros_eval_enabled():
+            return
+        interval = int(getattr(self, "lapras_tauros_eval_interval_epochs", 1) or 1)
+        if interval < 1 or (self.epoch + 1) % interval != 0:
+            return
+        if not self.accelerator.is_main_process:
+            return
+
+        base_model = getattr(self, "lapras_tauros_eval_base_model", None)
+        train_gin_config = getattr(
+            self, "lapras_tauros_eval_train_gin_config", None
+        )
+        if base_model is None or train_gin_config is None:
+            self.accelerator.print(
+                "Skipping Lapras-vs-TaurosV0 eval: local base model or "
+                "train gin config was not provided."
+            )
+            return
+
+        from metamon.rl.evaluate.common import MatchupSpec, PolicySpec, run_matchup_pair
+        from metamon.rl.evaluate.results import ResultsTracker
+
+        epoch = int(self.epoch)
+        battles = int(getattr(self, "lapras_tauros_eval_battles", 100))
+        output_dir = getattr(self, "lapras_tauros_eval_output_dir", None)
+        if output_dir is None:
+            output_dir = os.path.join(
+                self.ckpt_base_dir, self.run_name, "lapras_taurosv0_eval"
+            )
+        os.makedirs(output_dir, exist_ok=True)
+
+        agent = PolicySpec(
+            name=f"{self.run_name}-epoch{epoch}",
+            model_name=self.run_name,
+            checkpoint=epoch,
+            temperature=1.0,
+            team_set=getattr(self, "lapras_tauros_eval_agent_team_set", "lapras"),
+            battle_backend="metamon",
+            local_base_model=base_model,
+            local_ckpt_dir=self.ckpt_base_dir,
+            local_run_name=self.run_name,
+            local_train_gin_config=train_gin_config,
+            local_reward_function=getattr(
+                self, "lapras_tauros_eval_reward_function", None
+            ),
+        )
+        tauros = PolicySpec(
+            name="TaurosV0",
+            model_name="TaurosV0",
+            checkpoint=None,
+            temperature=1.0,
+            team_set=getattr(
+                self, "lapras_tauros_eval_opponent_team_set", "competitive"
+            ),
+            battle_backend="metamon",
+        )
+        matchup = MatchupSpec(
+            policy_a=agent,
+            policy_b=tauros,
+            n_battles=battles,
+            battle_format="gen1ou",
+        )
+
+        self.accelerator.print(
+            f"Running Lapras-vs-TaurosV0 eval after epoch {epoch}: "
+            f"{battles} battles"
+        )
+        pair = run_matchup_pair(
+            matchup=matchup,
+            gpu_a=0,
+            gpu_b=0,
+            output_dir=output_dir,
+            timeout=int(getattr(self, "lapras_tauros_eval_timeout", 7200)),
+            acceptor_startup_delay=float(
+                getattr(self, "lapras_tauros_eval_acceptor_startup_delay", 10.0)
+            ),
+            verbose=False,
+            save_trajectories=False,
+        )
+        if pair.challenger_proc.returncode != 0 or pair.acceptor_proc.returncode != 0:
+            self.accelerator.print(
+                "Lapras-vs-TaurosV0 eval failed. "
+                f"challenger={pair.challenger_proc.returncode}, "
+                f"acceptor={pair.acceptor_proc.returncode}"
+            )
+            self.log(
+                {
+                    "completed": 0,
+                    "epoch": epoch,
+                    "requested_battles": battles,
+                },
+                key="lapras-taurosv0-eval",
+            )
+            return
+
+        tracker = ResultsTracker(output_dir)
+        result = tracker.record_from_results_dir(
+            matchup_id=matchup.matchup_id,
+            policy_a_name=matchup.policy_a.short_label,
+            policy_b_name=matchup.policy_b.short_label,
+            results_dir=os.path.join(pair.matchup_dir, "results"),
+            challenger_username=pair.challenger_username,
+        )
+        if result is None:
+            self.accelerator.print("Lapras-vs-TaurosV0 eval produced no results.")
+            self.log(
+                {
+                    "completed": 0,
+                    "epoch": epoch,
+                    "requested_battles": battles,
+                },
+                key="lapras-taurosv0-eval",
+            )
+            return
+
+        metrics = {
+            "completed": 1,
+            "epoch": epoch,
+            "requested_battles": battles,
+            "total_battles": result.total_battles,
+            "lapras_wins": result.policy_a_wins,
+            "taurosv0_wins": result.policy_b_wins,
+            "lapras_win_rate": result.policy_a_win_rate,
+            "taurosv0_win_rate": 1.0 - result.policy_a_win_rate,
+        }
+        self.log(metrics, key="lapras-taurosv0-eval")
+        self.accelerator.print(
+            f"Lapras-vs-TaurosV0 eval: {result.policy_a_wins}-"
+            f"{result.policy_b_wins} ({result.policy_a_win_rate:.1%})"
+        )
+
+    def save_checkpoint(self):
+        super().save_checkpoint()
+        self._save_ema_checkpoint()
+        self._maybe_eval_lapras_vs_taurosv0()
+        self.accelerator.wait_for_everyone()
+
+    def _refresh_policy_snapshots_after_load(self) -> None:
+        self._refresh_fixed_base_anchor_reference()
+        self._refresh_global_anchor_reference()
+        self._refresh_update_control_reference()
+        if self.use_ema:
+            self._ema_policy_heads = self._clone_policy_heads(self.policy)
+
+    def load_checkpoint(self, epoch: int, resume_training_state: bool = True) -> None:
+        super().load_checkpoint(epoch, resume_training_state=resume_training_state)
+        self._refresh_policy_snapshots_after_load()
+
+    def load_checkpoint_from_path(
+        self, path: str, is_accelerate_state: bool = True
+    ) -> None:
+        super().load_checkpoint_from_path(
+            path, is_accelerate_state=is_accelerate_state
+        )
+        self._refresh_policy_snapshots_after_load()
 
     def init_logger(self):
         if self.log_to_wandb:
@@ -1601,8 +2862,11 @@ class MetamonAMAGOExperiment(amago.Experiment):
 
     def evaluate_val(self):
         amago.utils.call_async_env(self.val_envs, "resume_from_break")
-        out = super().evaluate_val()
-        amago.utils.call_async_env(self.val_envs, "take_long_break")
+        try:
+            with self._maybe_ema_eval_weights():
+                out = super().evaluate_val()
+        finally:
+            amago.utils.call_async_env(self.val_envs, "take_long_break")
         return out
 
     def init_model(self):
@@ -1630,6 +2894,11 @@ class MetamonAMAGOExperiment(amago.Experiment):
 
         policy.edit_actor_mask = _edit_actor_mask
         policy.edit_critic_mask = _edit_critic_mask
+        if self.critic_loss_weight_override is not None:
+            policy.critic_loss_weight = self.critic_loss_weight_override
+        self._refresh_global_anchor_reference()
+        self._refresh_update_control_reference()
+        self._init_ema_policy_heads()
 
     def train_step(self, batch: Batch, log_step: bool):
         fbc_filter = self.policy.fbc_filter_func
@@ -1642,4 +2911,42 @@ class MetamonAMAGOExperiment(amago.Experiment):
         ):
             seq_mask = (~(batch.rl2s == MAGIC_PAD_VAL).all(-1, keepdim=True)).bool()
             fbc_filter.set_seq_mask(seq_mask)
-        return super().train_step(batch, log_step=log_step)
+
+        with self.accelerator.accumulate(self.policy_aclr):
+            self.optimizer.zero_grad()
+            base_loss = self.policy_aclr(batch, log_step=log_step)
+            (
+                control_loss,
+                control_info,
+                observed_local_kl,
+                observed_global_anchor_kl,
+            ) = self._compute_update_control_loss(batch, log_step=log_step)
+            loss = base_loss + control_loss
+            l = (
+                {"Loss": loss, "Base Loss": base_loss}
+                | self.policy.update_info
+                | control_info
+            )
+            self.accelerator.backward(loss)
+            if self.accelerator.sync_gradients:
+                grad_clip = self._current_grad_clip()
+                self.accelerator.clip_grad_norm_(
+                    self.policy_aclr.parameters(), grad_clip
+                )
+                self.policy.soft_sync_targets()
+                self.grad_update_counter += 1
+                if log_step:
+                    l.update({"Grad Clip": grad_clip} | self.policy.get_grad_norms())
+            self.optimizer.step()
+            self.lr_schedule.step()
+            if self.accelerator.sync_gradients:
+                self._adapt_update_control(observed_local_kl, observed_global_anchor_kl)
+                self._apply_lr_controls()
+                self._update_ema_policy_heads()
+                self._maybe_refresh_update_control_reference_after_update()
+            if log_step:
+                l.update(
+                    {"Learning Rate": self.optimizer.param_groups[0]["lr"]}
+                    | self._update_control_state_info()
+                )
+        return l

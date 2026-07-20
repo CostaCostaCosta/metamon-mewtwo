@@ -1,0 +1,8 @@
+# Optional retention variant: v3 local32 controls adaptive damping, while this
+# adds a separate tiny static KL-to-base term through MetamonFinetuneAgent.
+
+include 'metamon/rl/configs/training/articuno_lapras_finetune_v3_local32.gin'
+
+custom_agent.MetamonFinetuneAgent.kl_anchor_coeff = 0.01
+MetamonAMAGOExperiment.global_anchor_kl_controls_lr = False
+MetamonAMAGOExperiment.global_anchor_kl_controls_coef = False

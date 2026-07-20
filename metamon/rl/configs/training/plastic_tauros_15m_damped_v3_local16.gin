@@ -1,0 +1,6 @@
+# Small-damped-v3-local16: local-reference KL controller diagnostic.
+
+include 'metamon/rl/configs/training/plastic_tauros_15m_damped_v3_local8.gin'
+
+MetamonAMAGOExperiment.dd_kl_reference_update_interval = 16
+MetamonAMAGOExperiment.dd_adapt_interval = 16

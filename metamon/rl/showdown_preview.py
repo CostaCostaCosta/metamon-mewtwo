@@ -224,6 +224,16 @@ def _describe_action(action_space: ActionSpace, state: UniversalState, idx: int)
     return f"Action {universal.action_idx}"
 
 
+def _sample_actions_for_preview(experiment) -> bool:
+    return bool(
+        getattr(
+            experiment,
+            "sample_actions_val",
+            getattr(experiment, "sample_actions", True),
+        )
+    )
+
+
 def _policy_preview_forward(
     experiment,
     obs: dict[str, torch.Tensor],
@@ -241,7 +251,7 @@ def _policy_preview_forward(
         traj_emb_t,
         straight_from_obs=straight_from_obs,
     )
-    if experiment.sample_actions:
+    if _sample_actions_for_preview(experiment):
         actions = action_dists.sample()
     elif policy.discrete:
         actions = torch.argmax(action_dists.probs, dim=-1, keepdim=True)
@@ -418,7 +428,7 @@ def run_showdown_with_preview(
                             obs=obs,
                             rl2s=rl2s,
                             time_idxs=time_idxs,
-                            sample=experiment.sample_actions,
+                            sample=_sample_actions_for_preview(experiment),
                             hidden_state=hidden_state,
                         )
                         probs, value_estimate, values = None, None, []

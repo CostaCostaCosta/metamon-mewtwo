@@ -1,0 +1,42 @@
+# Small-damped-v3-local8: local-reference KL controller diagnostic.
+# Keeps v2 numeric safety, pins LR multiplier at 1.0, and drives damping from
+# short local policy drift instead of epoch-anchor drift.
+
+include 'metamon/rl/configs/training/plastic_tauros_15m_damped_v2_no_lr_shrink.gin'
+
+MetamonAMAGOExperiment.dd_kl_reference_mode = "interval"
+MetamonAMAGOExperiment.dd_kl_reference_update_interval = 8
+MetamonAMAGOExperiment.dd_controller_kl_metric = "local_window_kl"
+MetamonAMAGOExperiment.log_global_anchor_kl = True
+MetamonAMAGOExperiment.global_anchor_kl_controls_lr = False
+MetamonAMAGOExperiment.global_anchor_kl_controls_coef = False
+
+MetamonAMAGOExperiment.target_kl_per_step = 0.03
+MetamonAMAGOExperiment.target_kl_final = 0.03
+MetamonAMAGOExperiment.target_kl_schedule_steps = 0
+MetamonAMAGOExperiment.kl_tolerance = 1.5
+MetamonAMAGOExperiment.kl_coef_init = 0.005
+MetamonAMAGOExperiment.kl_coef_max = 0.075
+MetamonAMAGOExperiment.kl_multiplier_max = 5.0
+MetamonAMAGOExperiment.kl_power_alpha = 0.0
+MetamonAMAGOExperiment.kl_schedule_steps = 600_000
+MetamonAMAGOExperiment.dd_adapt_interval = 8
+MetamonAMAGOExperiment.kl_coef_growth_factor = 1.08
+MetamonAMAGOExperiment.kl_coef_decay_factor = 0.99
+
+MetamonAMAGOExperiment.lr_shrink_factor = 1.0
+MetamonAMAGOExperiment.lr_grow_factor = 1.0
+MetamonAMAGOExperiment.lr_multiplier_min = 1.0
+MetamonAMAGOExperiment.lr_multiplier_max = 1.0
+
+MetamonAMAGOExperiment.ent_coef_init = 0.002
+MetamonAMAGOExperiment.ent_coef_min = 0.0005
+MetamonAMAGOExperiment.ent_power_alpha = 0.25
+MetamonAMAGOExperiment.ent_schedule_steps = 600_000
+
+MetamonAMAGOExperiment.ratio_clip_low = 0.70
+MetamonAMAGOExperiment.ratio_clip_high = 1.30
+MetamonAMAGOExperiment.ratio_clip_low_final = 0.80
+MetamonAMAGOExperiment.ratio_clip_high_final = 1.20
+MetamonAMAGOExperiment.ratio_clip_schedule_steps = 600_000
+MetamonAMAGOExperiment.ratio_clip_penalty_coeff = 0.01

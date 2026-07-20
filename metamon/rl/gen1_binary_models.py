@@ -190,6 +190,26 @@ class LaprasActorV1(LocalFinetunedModel):
         )
 
 
+@pretrained_model("lapras_public_baseline")
+class LaprasPublicBaseline(LocalFinetunedModel):
+    """
+    Public finetune.gin Articuno -> Lapras-team baseline.
+
+    Defaults to epoch 0. Epoch 4 tied the initial TaurosV0 H2H sweep but later
+    failed on the ladder with a low win rate.
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=Articuno,
+            amago_ckpt_dir=LAPRAS_SPECIALIST_CHECKPOINT_ROOT,
+            model_name="lapras_articuno_public_finetune_baseline",
+            default_checkpoint=0,
+            train_gin_config="finetune.gin",
+            dataset_config="lapras_only.yaml",
+        )
+
+
 @pretrained_model("Persian")
 class Persian(LocalPretrainedModel):
     """

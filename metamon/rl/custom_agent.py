@@ -209,6 +209,7 @@ class ISAdvantageFilter:
 
 _TORTOISE_PREFIX = "_tortoise_"
 _BASE_PREFIX = "_base_"
+_EPOCH_START_PREFIX = "_epoch_start_"
 
 _TORTOISE_MODULES = {
     "_tortoise_tstep_encoder": "tstep_encoder",
@@ -220,6 +221,11 @@ _BASE_MODULES = {
     "_base_tstep_encoder": "tstep_encoder",
     "_base_traj_encoder": "traj_encoder",
     "_base_actor": "actor",
+}
+_EPOCH_START_MODULES = {
+    "_epoch_start_tstep_encoder": "tstep_encoder",
+    "_epoch_start_traj_encoder": "traj_encoder",
+    "_epoch_start_actor": "actor",
 }
 
 
@@ -249,6 +255,9 @@ class MetamonFinetuneAgent(MultiTaskAgent):
         kl_anchor_coeff: Weight for the KL-to-base policy anchor.  When
             positive, adds ``KL(pi_current || pi_base)`` on valid actor
             timesteps.
+        epoch_start_kl_coeff: Weight for the KL-to-epoch-start policy anchor.
+            The epoch-start snapshot is refreshed by ``MetamonAMAGOExperiment``
+            immediately before building each epoch's training dataloader.
         tortoise_tau: EMA rate for the tortoise update (smaller = slower).
         use_tortoise_for_inference: If True, ``get_actions`` runs the
             tortoise encoder + actor instead of the hare.
@@ -262,6 +271,7 @@ class MetamonFinetuneAgent(MultiTaskAgent):
         *args,
         bc_coeff: float = 1.0,
         kl_anchor_coeff: float = 0.0,
+        epoch_start_kl_coeff: float = 0.0,
         tortoise_tau: float = 0.001,
         use_tortoise_for_inference: bool = False,
         use_is_correction: bool = True,
@@ -270,6 +280,7 @@ class MetamonFinetuneAgent(MultiTaskAgent):
         super().__init__(*args, **kwargs)
         self.bc_coeff = bc_coeff
         self.kl_anchor_coeff = kl_anchor_coeff
+        self.epoch_start_kl_coeff = epoch_start_kl_coeff
         self.tortoise_tau = tortoise_tau
         self.use_tortoise_for_inference = use_tortoise_for_inference
         self.use_is_correction = use_is_correction
@@ -300,6 +311,17 @@ class MetamonFinetuneAgent(MultiTaskAgent):
         ):
             m.requires_grad_(False)
 
+        # Epoch-start anchor (refreshed before each epoch's training updates)
+        self._epoch_start_tstep_encoder = copy.deepcopy(self.tstep_encoder)
+        self._epoch_start_traj_encoder = copy.deepcopy(self.traj_encoder)
+        self._epoch_start_actor = copy.deepcopy(self.actor)
+        for m in (
+            self._epoch_start_tstep_encoder,
+            self._epoch_start_traj_encoder,
+            self._epoch_start_actor,
+        ):
+            m.requires_grad_(False)
+
         # BC actor (trainable, estimates pi_data on frozen base representation)
         self._bc_actor = copy.deepcopy(self.actor)
 
@@ -307,10 +329,10 @@ class MetamonFinetuneAgent(MultiTaskAgent):
         has_tortoise = any(k.startswith(_TORTOISE_PREFIX) for k in state_dict)
         self._loaded_from_tortoise_agent = has_tortoise
 
+        extra = {}
         if not has_tortoise:
             # Loading a standard (non-MetamonFinetuneAgent) checkpoint.
             # Fill tortoise, base, and bc_actor keys from the hare weights.
-            extra = {}
             for tort_attr, hare_attr in _TORTOISE_MODULES.items():
                 prefix = hare_attr + "."
                 for k, v in state_dict.items():
@@ -326,6 +348,17 @@ class MetamonFinetuneAgent(MultiTaskAgent):
             for k, v in state_dict.items():
                 if k.startswith(actor_prefix):
                     extra["_bc_actor" + k[len("actor") :]] = v.clone()
+
+        has_epoch_start = any(k.startswith(_EPOCH_START_PREFIX) for k in state_dict)
+        if not has_epoch_start:
+            # Old finetune checkpoints and base checkpoints predate this anchor.
+            for epoch_attr, hare_attr in _EPOCH_START_MODULES.items():
+                prefix = hare_attr + "."
+                for k, v in state_dict.items():
+                    if k.startswith(prefix):
+                        extra[epoch_attr + k[len(hare_attr) :]] = v.clone()
+
+        if extra:
             state_dict = {**state_dict, **extra}
 
         super().load_state_dict(state_dict, strict=strict, **kwargs)
@@ -356,8 +389,20 @@ class MetamonFinetuneAgent(MultiTaskAgent):
             getattr(self, tort_attr).requires_grad_(False)
         for base_attr in _BASE_MODULES:
             getattr(self, base_attr).requires_grad_(False)
+        for epoch_attr in _EPOCH_START_MODULES:
+            self._full_copy(
+                getattr(self, epoch_attr),
+                getattr(self, _EPOCH_START_MODULES[epoch_attr]),
+            )
+            getattr(self, epoch_attr).requires_grad_(False)
 
         self._checkpoint_loaded = True
+
+    def refresh_epoch_start_anchor(self):
+        """Snapshot the current policy for per-epoch KL damping."""
+        for epoch_attr, hare_attr in _EPOCH_START_MODULES.items():
+            self._full_copy(getattr(self, epoch_attr), getattr(self, hare_attr))
+            getattr(self, epoch_attr).requires_grad_(False)
 
     def soft_sync_targets(self):
         super().soft_sync_targets()
@@ -465,9 +510,15 @@ class MetamonFinetuneAgent(MultiTaskAgent):
         ).sum(dim=-1, keepdim=True)
         return kl, entropy
 
-    def _compute_kl_anchor(
-        self, batch: Batch, s_rep_base: torch.Tensor, kl_mask: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _compute_policy_kl_anchor(
+        self,
+        batch: Batch,
+        anchor_tstep_encoder,
+        anchor_traj_encoder,
+        anchor_actor,
+        kl_mask: torch.Tensor,
+        anchor_s_rep: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         straight_from_obs = {k: batch.obs[k] for k in self.pass_obs_keys_to_actor}
 
         o_current = self.tstep_encoder(obs=batch.obs, rl2s=batch.rl2s)
@@ -479,20 +530,57 @@ class MetamonFinetuneAgent(MultiTaskAgent):
             straight_from_obs=straight_from_obs,
         )
         with torch.no_grad():
-            base_dist = self._base_actor(
-                s_rep_base,
+            if anchor_s_rep is None:
+                anchor_o = anchor_tstep_encoder(obs=batch.obs, rl2s=batch.rl2s)
+                anchor_s_rep, _ = anchor_traj_encoder(
+                    seq=anchor_o, time_idxs=batch.time_idxs, hidden_state=None
+                )
+            anchor_dist = anchor_actor(
+                anchor_s_rep,
                 straight_from_obs=straight_from_obs,
             )
 
         kl_elems, entropy_elems = self._compute_discrete_kl_and_entropy(
-            current_dist, base_dist
+            current_dist, anchor_dist
         )
         kl_elems = kl_elems[:, :-1, ...]
         entropy_elems = entropy_elems[:, :-1, ...]
         kl_mean = amago.utils.masked_avg(kl_elems, kl_mask)
         entropy_mean = amago.utils.masked_avg(entropy_elems, kl_mask)
-        kl_loss = self.kl_anchor_coeff * kl_mean
-        return kl_loss, kl_mean, entropy_mean
+        stats = {
+            "Mean": kl_mean,
+            "P90": self._masked_quantile(kl_elems, kl_mask, 0.90),
+            "P95": self._masked_quantile(kl_elems, kl_mask, 0.95),
+            "P99": self._masked_quantile(kl_elems, kl_mask, 0.99),
+            "Max": self._masked_max(kl_elems, kl_mask),
+            "Entropy Mean": entropy_mean,
+            "Entropy P10": self._masked_quantile(entropy_elems, kl_mask, 0.10),
+        }
+        return kl_mean, stats
+
+    @staticmethod
+    def _masked_values(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        bool_mask = mask.bool()
+        while bool_mask.ndim < values.ndim:
+            bool_mask = bool_mask.unsqueeze(-1)
+        bool_mask = bool_mask.expand_as(values)
+        return values.detach()[bool_mask].float()
+
+    @classmethod
+    def _masked_quantile(
+        cls, values: torch.Tensor, mask: torch.Tensor, q: float
+    ) -> torch.Tensor:
+        masked = cls._masked_values(values, mask)
+        if masked.numel() == 0:
+            return torch.tensor(float("nan"), device=values.device)
+        return torch.quantile(masked, q)
+
+    @classmethod
+    def _masked_max(cls, values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        masked = cls._masked_values(values, mask)
+        if masked.numel() == 0:
+            return torch.tensor(float("nan"), device=values.device)
+        return masked.max()
 
     def forward(self, batch: Batch, log_step: bool) -> torch.Tensor:
         if not self._checkpoint_loaded:
@@ -546,22 +634,64 @@ class MetamonFinetuneAgent(MultiTaskAgent):
 
         total_loss = total_loss + self.bc_coeff * bc_loss
         kl_anchor_loss = None
-        kl_anchor_mean = None
-        policy_entropy = None
+        base_kl_stats = None
         if self.kl_anchor_coeff > 0.0:
-            kl_anchor_loss, kl_anchor_mean, policy_entropy = self._compute_kl_anchor(
-                batch, s_rep_base, bc_mask
+            base_kl_mean, base_kl_stats = self._compute_policy_kl_anchor(
+                batch,
+                self._base_tstep_encoder,
+                self._base_traj_encoder,
+                self._base_actor,
+                bc_mask,
+                anchor_s_rep=s_rep_base,
             )
+            kl_anchor_loss = self.kl_anchor_coeff * base_kl_mean
             total_loss = total_loss + kl_anchor_loss
+        epoch_start_kl_loss = None
+        epoch_start_kl_stats = None
+        if self.epoch_start_kl_coeff > 0.0:
+            epoch_start_kl_mean, epoch_start_kl_stats = self._compute_policy_kl_anchor(
+                batch,
+                self._epoch_start_tstep_encoder,
+                self._epoch_start_traj_encoder,
+                self._epoch_start_actor,
+                bc_mask,
+            )
+            epoch_start_kl_loss = self.epoch_start_kl_coeff * epoch_start_kl_mean
+            total_loss = total_loss + epoch_start_kl_loss
 
         if log_step:
             self.update_info["BC Loss"] = bc_loss.detach()
             self.update_info["Log Pi Base (mean)"] = logp_base.mean().detach()
             self.update_info["Log Pi Data (mean)"] = logp_data.mean().detach()
-            if kl_anchor_loss is not None:
+            if kl_anchor_loss is not None and base_kl_stats is not None:
                 self.update_info["KL Anchor Loss"] = kl_anchor_loss.detach()
-                self.update_info["KL Anchor Mean"] = kl_anchor_mean.detach()
-                self.update_info["Policy Entropy"] = policy_entropy.detach()
+                self.update_info["KL Anchor Mean"] = base_kl_stats["Mean"].detach()
+                self.update_info["KL Anchor P90"] = base_kl_stats["P90"].detach()
+                self.update_info["KL Anchor P95"] = base_kl_stats["P95"].detach()
+                self.update_info["KL Anchor P99"] = base_kl_stats["P99"].detach()
+                self.update_info["KL Anchor Max"] = base_kl_stats["Max"].detach()
+                self.update_info["Policy Entropy"] = base_kl_stats[
+                    "Entropy Mean"
+                ].detach()
+                self.update_info["Policy Entropy P10"] = base_kl_stats[
+                    "Entropy P10"
+                ].detach()
+            if (
+                epoch_start_kl_loss is not None
+                and epoch_start_kl_stats is not None
+            ):
+                self.update_info["Epoch-Start KL Loss"] = (
+                    epoch_start_kl_loss.detach()
+                )
+                self.update_info["Epoch-Start KL Mean"] = epoch_start_kl_stats[
+                    "Mean"
+                ].detach()
+                self.update_info["Epoch-Start KL P95"] = epoch_start_kl_stats[
+                    "P95"
+                ].detach()
+                self.update_info["Epoch-Start KL P99"] = epoch_start_kl_stats[
+                    "P99"
+                ].detach()
             f = self.fbc_filter_func
             if (
                 getattr(f, "seq_enabled", False)
