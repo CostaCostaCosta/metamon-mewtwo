@@ -1,5 +1,9 @@
 *logs_and_checkpoints/
 checkpoints/
+test_vec_trajs/
+
+# Vectorized Showdown sim host — run `npm ci` in metamon/env/vectorized/
+metamon/env/vectorized/node_modules/
 
 # Weights & Biases
 wandb/
@@ -17,6 +21,8 @@ __pycache__/
 *.sh
 !tools/
 !tools/*.sh
+!scripts/
+!scripts/*.sh
 *.csv
 *.pt
 
@@ -184,3 +190,10 @@ checks_data/
 metamon_cache
 teams/**/*.txt
 metamon/data/stats
+
+# Stray literal-~ cache dir created by a bad path expansion (do not commit)
+~/
+
+# graphify knowledge graph: commit the built graph outputs, ignore the
+# regenerable extraction cache.
+graphify-out/cache/

@@ -7,6 +7,7 @@ from typing import Optional, Type
 warnings.filterwarnings("ignore")
 
 
+import gin
 import huggingface_hub
 import torch
 import amago
@@ -217,7 +218,10 @@ class PretrainedModel:
         log: bool = False,
         action_temperature: float = 1.0,
     ) -> amago.Experiment:
-        # use the base config and the gin file to configure the model
+        # Each load must start from a clean gin scope so an earlier model's
+        # bindings (e.g. TaurosV0's Multigammas.discrete) do not leak into
+        # the next initialize_agent call (opponent pool, ensembles, etc.).
+        gin.clear_config()
         amago.cli_utils.use_config(
             self.base_config | {"MetamonDiscrete.temperature": action_temperature},
             [self.model_gin_config_path, self.train_gin_config_path],
@@ -236,10 +240,13 @@ class PretrainedModel:
         )
         # starting the experiment will build the initial model
         experiment.start()
-        if checkpoint is not None:
+        # checkpoint == 0 means "untrained base, skip load"; any non-zero value
+        # (including the LATEST_CHECKPOINT sentinel) loads weights from disk.
+        if checkpoint != 0:
             ckpt_state = torch.load(ckpt_path, map_location="cpu")
             ckpt_state = self._normalize_checkpoint_keys(ckpt_state)
             model_state = experiment.policy.state_dict()
+            ckpt_state = self._migrate_legacy_perceiver_ff_keys(ckpt_state, model_state)
             self._validate_checkpoint(ckpt_state, model_state)
             experiment.policy.load_state_dict(ckpt_state, strict=True)
             experiment.policy.on_checkpoint_loaded(is_resume=False)
@@ -274,6 +281,48 @@ class PretrainedModel:
             return normalized
         return ckpt_state
 
+    def _migrate_legacy_perceiver_ff_keys(ckpt_state: dict, model_state: dict) -> dict:
+        """Remap pre-``metamon-dev sync`` perceiver feed-forward keys.
+
+        Older checkpoints stored the perceiver layer FF as an ``nn.Sequential``
+        (``cross_ff.0`` = Linear, ``.1`` = SiLU, ``.2`` = Linear). The current
+        ``PerceiverLayer`` uses two separate Linears (``cross_ff1`` / ``cross_ff2``
+        and ``self_ff1`` / ``self_ff2``). The math is identical, so a pure rename
+        of the state-dict keys restores compatibility. Only applied when the
+        checkpoint has the old keys and the model expects the new ones.
+        """
+        needed = {
+            k
+            for k in model_state
+            if ".cross_ff1." in k
+            or ".cross_ff2." in k
+            or ".self_ff1." in k
+            or ".self_ff2." in k
+        }
+        if not needed:
+            return ckpt_state
+        remap = {
+            ".cross_ff.0.": ".cross_ff1.",
+            ".cross_ff.2.": ".cross_ff2.",
+            ".self_ff.0.": ".self_ff1.",
+            ".self_ff.2.": ".self_ff2.",
+        }
+        new_state = {}
+        migrated = 0
+        for k, v in ckpt_state.items():
+            nk = k
+            for old, new in remap.items():
+                if old in k and k.replace(old, new) in needed:
+                    nk = k.replace(old, new)
+                    migrated += 1
+                    break
+            new_state[nk] = v
+        if migrated:
+            print(
+                f"Migrated {migrated} legacy perceiver FF keys (cross_ff/self_ff Sequential -> split Linear)."
+            )
+        return new_state
+
     @staticmethod
     def _validate_checkpoint(ckpt_state: dict, model_state: dict) -> None:
         ckpt_keys = set(ckpt_state.keys())
@@ -307,6 +356,15 @@ class PretrainedModel:
             f"Checkpoint validated: {len(model_keys)} keys, "
             f"{model_params:,} params (model) == {ckpt_params:,} params (ckpt)"
         )
+
+
+def get_pretrained_registry_name(model: PretrainedModel) -> str:
+    """Return the registry key for a :class:`PretrainedModel` instance."""
+    model_cls = type(model)
+    for name, cls in ALL_PRETRAINED_MODELS.items():
+        if cls is model_cls:
+            return name
+    raise ValueError(f"No registry entry for pretrained model class {model_cls!r}")
 
 
 class LocalPretrainedModel(PretrainedModel):
@@ -379,6 +437,7 @@ class LocalFinetunedModel(LocalPretrainedModel):
             reward_function=reward_function,
             battle_backend=battle_backend,
             dataset_config=dataset_config,
+            gin_overrides=base_model.gin_overrides,
         )
 
 
@@ -1309,6 +1368,77 @@ class V2AGroupedV2DataAblation(PretrainedModel):
 
 
 @pretrained_model()
+class V2AGroupedV2StatsAblation(PretrainedModel):
+    """Same small GroupedV2 architecture as ``V2AGroupedV2DataAblation`` but using
+    the computed-stats observation space (``GroupedStatsObservationSpace``, per-
+    Pokemon numeric width 37 instead of 31).
+
+    There are no pretrained weights on HF for this config; it exists as the
+    *from-scratch* base for the gen9ou online RL run ``mini_online_g9_v0``
+    (``--base_model V2AGroupedV2StatsAblation --from_scratch``). ``default_checkpoint=0``
+    means "untrained base, skip weight load" so instantiating it never tries to
+    download a checkpoint.
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="v2_grouped_v2_arch_stats_ablation",
+            model_gin_config="smaller_multitaskagent_grouped_v2_arch.gin",
+            train_gin_config="grouped_v2_large_isfilter.gin",
+            default_checkpoint=0,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("GroupedStatsObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
+class V2AGroupedV2Tauros35M(PretrainedModel):
+    """TaurosV0-inspired GroupedV2 architecture scaled to ~35M trainable params.
+
+    Same architecture family as ``TaurosV0`` (``grouped_v2_50m.gin``, ~62M
+    params) — ``MetamonMaskedActor`` + ``NCriticsTwoHot`` critic + the
+    three-stage GroupedV2 tstep encoder (pokemon / global / fusion perceivers)
+    + ``TformerTrajEncoder`` — with the per-stage widths and the traj-encoder
+    ``d_model`` reduced so the total trainable count lands at ~35M
+    (``34,936,182``). Same spaces / tokenizer / reward / battle backend as
+    ``V2AGroupedV2DataAblation`` and ``TaurosV0``.
+
+    There are no pretrained weights on HF for this config; it exists as the
+    *from-scratch* base for the smogon-only online RL run
+    ``mini_online_smogon_v0``
+    (``--base_model V2AGroupedV2Tauros35M --from_scratch``).
+    ``default_checkpoint=0`` means "untrained base, skip weight load" so
+    instantiating it never tries to download a checkpoint.
+    """
+
+    def __init__(self):
+        super().__init__(
+            model_name="v2_grouped_v2_tauros_35m",
+            model_gin_config="grouped_v2_35m.gin",
+            train_gin_config="grouped_v2_large_isfilter.gin",
+            default_checkpoint=0,
+            action_space=get_action_space("DefaultActionSpace"),
+            observation_space=get_observation_space("GroupedObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+            battle_backend="metamon",
+            gin_overrides={
+                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+                    "DefaultObservationSpace-v1"
+                ),
+            },
+        )
+
+
+@pretrained_model()
 class TaurosV0(PretrainedModel):
     def __init__(self):
         super().__init__(
@@ -1327,6 +1457,268 @@ class TaurosV0(PretrainedModel):
                 ),
             },
         )
+
+
+ONLINE_TAUROS_V1_SAVE_DIR = "/mnt/nfs_client/jake/metamon_scratchpad/online_tauros_v1"
+
+# Sentinel checkpoint id that resolves to the learner's rolling ``latest/policy.pt``
+# instead of a saved ``policy_epoch_{N}.pt``. Lets us eval exactly what the
+# validator loads each epoch (e.g. ``--checkpoints -1``).
+LATEST_CHECKPOINT = -1
+
+
+@pretrained_model()
+class OnlineTaurosV1(LocalFinetunedModel):
+    """Online RL finetune of TaurosV0 from ``metamon.rl.online_rl`` run ``online_tauros_v1``.
+
+    Checkpoints live under
+    ``{save_dir}/online_tauros_v1/ckpts/policy_weights/policy_epoch_{N}.pt``.
+    Pass ``checkpoint=N`` to ``initialize_agent`` or the evaluate CLI to pick a
+    specific epoch (``default_checkpoint`` is 290, the last ``policy_epoch_*``
+    saved at ``ckpt_interval=10`` when training finished).
+    Pass ``checkpoint=-1`` (``LATEST_CHECKPOINT``) to load the learner's rolling
+    ``ckpts/latest/policy.pt`` — the same file the validator reads each epoch.
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=TaurosV0,
+            amago_ckpt_dir=ONLINE_TAUROS_V1_SAVE_DIR,
+            model_name="online_tauros_v1",
+            default_checkpoint=290,
+            # Same train gin stack as online_rl.py (TaurosV0 default + online_rl.gin
+            # overrides are LR-only and irrelevant at eval time).
+            train_gin_config="grouped_v2_large_isfilter.gin",
+            dataset_config="online_selfplay.yaml",
+        )
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        if checkpoint == LATEST_CHECKPOINT:
+            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
+        return super().get_path_to_checkpoint(checkpoint)
+
+
+MINI_ONLINE_V1_SAVE_DIR = "/mnt/nfs_client/jake/metamon_scratchpad/mini_online_v1"
+
+
+@pretrained_model()
+class SmallG1OnlineV0(LocalFinetunedModel):
+    """Online RL run ``mini_online_v1`` from ``metamon.rl.online_rl``.
+
+    Unlike ``OnlineTaurosV1`` (a finetune of TaurosV0), this run was trained
+    *from scratch* (``--from_scratch``) using the smaller ``V2AGroupedV2DataAblation``
+    architecture (GroupedV2 tstep encoder), the same offline mixture
+    (``online_selfplay.yaml``), and a fresh online buffer. ``base_model`` here only
+    supplies the architecture/spaces/tokenizer/reward config — none of its weights
+    are loaded; weights come from this run's own checkpoints.
+
+    Checkpoints live under
+    ``{save_dir}/mini_online_v1/ckpts/policy_weights/policy_epoch_{N}.pt``.
+    Pass ``checkpoint=N`` for a specific epoch, or ``checkpoint=-1``
+    (``LATEST_CHECKPOINT``) for the learner's rolling ``ckpts/latest/policy.pt``
+    (the same file the validator reads each epoch).
+
+    NOTE: ``default_checkpoint`` is the latest saved epoch as of registration; the
+    run targets epoch 3950 (``ckpt_interval=50``). Bump this to the final saved
+    epoch once training finishes.
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=V2AGroupedV2DataAblation,
+            amago_ckpt_dir=MINI_ONLINE_V1_SAVE_DIR,
+            model_name="mini_online_v1",
+            default_checkpoint=3050,
+            # Same train gin stack as online_rl.py (base model default +
+            # online_rl.gin overrides are LR-only and irrelevant at eval time).
+            train_gin_config="grouped_v2_large_isfilter.gin",
+            dataset_config="online_selfplay.yaml",
+        )
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        if checkpoint == LATEST_CHECKPOINT:
+            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
+        return super().get_path_to_checkpoint(checkpoint)
+
+
+MINI_ONLINE_PSRO_V1_SAVE_DIR = "/home/eddie/metamon_runs/mini_online_psro_v1"
+
+
+@pretrained_model()
+class MiniOnlinePsroV0(LocalFinetunedModel):
+    """PSRO-Lite continuation run ``mini_online_psro_v1`` from ``metamon.rl.online_rl``.
+
+    Continues ``mini_online_v1`` from its epoch-700 checkpoint with PSRO-Lite
+    prioritized opponent sampling. Same from-scratch ``V2AGroupedV2DataAblation``
+    architecture as ``SmallG1OnlineV0``; ``base_model`` only supplies
+    architecture/spaces/tokenizer/reward config — weights come from this run's
+    own checkpoints.
+
+    Checkpoints live under
+    ``{save_dir}/mini_online_psro_v1/ckpts/policy_weights/policy_epoch_{N}.pt``
+    (saved every 10 epochs). Pass ``checkpoint=N`` for a specific epoch, or
+    ``checkpoint=-1`` (``LATEST_CHECKPOINT``) for the learner's rolling
+    ``ckpts/latest/policy.pt`` (the same file the validator reads each epoch).
+
+    Registered so the run's own past checkpoints can serve as PSRO self-play
+    opponents: add an entry to ``metamon/rl/configs/opponent_pools/hl_gen1ou.yaml``
+    with ``model_name: MiniOnlinePsroV0`` and a ``checkpoints`` range of
+    existing epochs. NOTE: the ``checkpoints`` range is a static snapshot parsed
+    at pool-load time — relaunch the collector to refresh the past-self set as
+    the run saves more checkpoints (the run targets epoch 3950).
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=V2AGroupedV2DataAblation,
+            amago_ckpt_dir=MINI_ONLINE_PSRO_V1_SAVE_DIR,
+            model_name="mini_online_psro_v1",
+            default_checkpoint=560,
+            # Same train gin stack as SmallG1OnlineV0 / online_rl.py.
+            train_gin_config="grouped_v2_large_isfilter.gin",
+            dataset_config="online_selfplay.yaml",
+        )
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        if checkpoint == LATEST_CHECKPOINT:
+            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
+        return super().get_path_to_checkpoint(checkpoint)
+
+
+MINI_ONLINE_SMOGON_V0_SAVE_DIR = "/home/eddie/metamon_runs/mini_online_smogon_v0"
+
+
+@pretrained_model("squirtle")
+class Squirtle(LocalFinetunedModel):
+    """From-scratch smogon-only online RL run ``mini_online_smogon_v0`` (this run).
+
+    Registered under the name ``squirtle`` so it can be used directly as
+    ``--agent squirtle``. Defaults to ``LATEST_CHECKPOINT`` (the learner's
+    rolling ``ckpts/latest/policy.pt``) so playtests/evals always pick up the
+    most recent weights. Also registered so this run's own past checkpoints
+    can serve as PSRO self-play opponents (smogon-side specialists) in
+    ``hl_gen1ou.yaml``. Mirrors ``MiniOnlinePsroV1_3``. ``base_model`` is the
+    from-scratch ``V2AGroupedV2Tauros35M`` arch (no HF weights); weights come
+    from this run's own checkpoints under
+    ``{save_dir}/mini_online_smogon_v0/ckpts/policy_weights/policy_epoch_{N}.pt``
+    (saved every 25 epochs). ``checkpoint=-1`` (``LATEST_CHECKPOINT``) loads the
+    learner's rolling ``ckpts/latest/policy.pt``.
+
+    Added by the automated monitor when ``val/Average Win Rate`` vs
+    TaurosV0-competitive crosses 0.50 / hits new highs (cap 5 rows).
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=V2AGroupedV2Tauros35M,
+            amago_ckpt_dir=MINI_ONLINE_SMOGON_V0_SAVE_DIR,
+            model_name="mini_online_smogon_v0",
+            default_checkpoint=LATEST_CHECKPOINT,
+            train_gin_config="grouped_v2_large_isfilter.gin",
+            dataset_config="online_selfplay.yaml",
+        )
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        if checkpoint == LATEST_CHECKPOINT:
+            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
+        return super().get_path_to_checkpoint(checkpoint)
+
+
+MINI_ONLINE_PSRO_V1_3_SAVE_DIR = "/home/eddie/metamon_runs/mini_online_psro_v1.3"
+
+
+@pretrained_model()
+class MiniOnlinePsroV1_3(LocalFinetunedModel):
+    """PSRO-Lite continuation run ``mini_online_psro_v1.3`` from ``metamon.rl.online_rl``.
+
+    The v1.3 run resumes from ``mini_online_psro_v1`` and trains under the gen1ou
+    competitive curriculum (``genamon/rl/configs/team_schedules/gen1ou_competitive_curriculum_v1.4.yaml``),
+    shifting the collection mix from gl_05_26 to smogon_pass2 /
+    smogon_pass2_selected teams. Same from-scratch ``V2AGroupedV2DataAblation``
+    architecture as ``SmallG1OnlineV0``; ``base_model`` only supplies
+    architecture/spaces/tokenizer/reward config — weights come from this run's
+    own checkpoints.
+
+    Checkpoints live under
+    ``{save_dir}/mini_online_psro_v1.3/ckpts/policy_weights/policy_epoch_{N}.pt``
+    (saved every 10 epochs). Pass ``checkpoint=N`` for a specific epoch, or
+    ``checkpoint=-1`` (``LATEST_CHECKPOINT``) for the learner's rolling
+    ``ckpts/latest/policy.pt``.
+
+    Registered so the run's own past checkpoints can serve as PSRO self-play
+    opponents (specialists) in ``hl_gen1ou.yaml``: a late smogon-trained self
+    plays the current smogon-heavy ``@schedule``; early/mid gl-era selves are
+    pinned to ``gl_05_26`` / ``smogon_pass2`` team sets where they are
+    competent, giving the league gl- and smogon-specialist peers rather than
+    only the fixed external gl-era models. The ``checkpoints`` list is a static
+    snapshot parsed at pool-load time — relaunch the collector to refresh it as
+    the run saves more checkpoints (the run targets epoch 3950).
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=V2AGroupedV2DataAblation,
+            amago_ckpt_dir=MINI_ONLINE_PSRO_V1_3_SAVE_DIR,
+            model_name="mini_online_psro_v1.3",
+            default_checkpoint=1760,
+            # Same train gin stack as SmallG1OnlineV0 / online_rl.py.
+            train_gin_config="grouped_v2_large_isfilter.gin",
+            dataset_config="online_selfplay.yaml",
+        )
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        if checkpoint == LATEST_CHECKPOINT:
+            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
+        return super().get_path_to_checkpoint(checkpoint)
+
+
+MINI_ONLINE_PSRO_V1_4_SAVE_DIR = "/home/eddie/metamon_runs/mini_online_psro_v1.4"
+
+
+@pretrained_model()
+class MiniOnlinePsroV1_4(LocalFinetunedModel):
+    """PSRO-Lite continuation run ``mini_online_psro_v1.4`` from ``metamon.rl.online_rl``.
+
+    v1.4 is a clean break from v1.3: it bootstraps policy WEIGHTS from
+    ``mini_online_psro_v1.3`` epoch 1800 via ``--prev_run_dir`` but starts a
+    FRESH training state (optimizer / scheduler / PopArt / RNG reset, epoch
+    counter at 0) and trains under the gen1ou maintenance schedule
+    (``gen1ou_competitive_maintenance_v1.4.yaml``; 15/20/65 gl/pass2/selected
+    from epoch 0). Same from-scratch ``V2AGroupedV2DataAblation`` architecture
+    as ``SmallG1OnlineV0``; ``base_model`` only supplies architecture /
+    spaces / tokenizer / reward config — weights come from this run's own
+    checkpoints.
+
+    Checkpoints live under
+    ``{save_dir}/mini_online_psro_v1.4/ckpts/policy_weights/policy_epoch_{N}.pt``
+    (saved every 10 epochs). Pass ``checkpoint=N`` for a specific epoch, or
+    ``checkpoint=-1`` (``LATEST_CHECKPOINT``) for the learner's rolling
+    ``ckpts/latest/policy.pt`` (the same file the validator reads each epoch).
+
+    ``default_checkpoint`` is pinned to a frozen named checkpoint (bump it as
+    the run advances) so evaluations default to a stable snapshot rather than
+    the learner's rolling ``latest/policy.pt``. Pass ``checkpoint=-1``
+    (``LATEST_CHECKPOINT``) explicitly to opt into hot-loading the live
+    ``latest/policy.pt`` (the same file the validator reads each epoch).
+    For PSRO self-play pool use, specify explicit checkpoints in the pool YAML
+    (the ``checkpoints`` list is parsed at pool-load time).
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=V2AGroupedV2DataAblation,
+            amago_ckpt_dir=MINI_ONLINE_PSRO_V1_4_SAVE_DIR,
+            model_name="mini_online_psro_v1.4",
+            default_checkpoint=740,
+            # Same train gin stack as SmallG1OnlineV0 / online_rl.py.
+            train_gin_config="grouped_v2_large_isfilter.gin",
+            dataset_config="online_selfplay.yaml",
+        )
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        if checkpoint == LATEST_CHECKPOINT:
+            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
+        return super().get_path_to_checkpoint(checkpoint)
 
 
 @pretrained_model()

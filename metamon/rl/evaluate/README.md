@@ -77,6 +77,40 @@ python -m metamon.rl.evaluate --eval_type challenge --agent SyntheticRLV2 \
 
 The acceptor must be online before the challenger starts sending challenges.
 
+#### `metamon` — Vectorized Showdown Self-Play
+
+One shared in-the-loop opponent for all parallel lanes. On each full env
+``reset()``, sample from the opponent pool config: pick an ``agents`` entry, then
+sample checkpoint / temperature / team set from that entry's merged fields. Use
+AMAGO ``force_reset_on_every=True`` in training to redraw between epochs.
+
+**Simple eval** — CLI auto-builds a one-agent config from ``--opponent_agent`` and
+``--team_set`` (printed at startup):
+
+```bash
+python -m metamon.rl.evaluate \
+    --eval_type metamon \
+    --agent Kakuna \
+    --opponent_agent Kadabra \
+    --team_set competitive \
+    --gens 9 --formats ou \
+    --total_battles 100 \
+    --num_parallel 8 --n_workers 4
+```
+
+**Opponent diversity** — pass a ladder self-play YAML with multiple ``agents``:
+
+```bash
+python -m metamon.rl.evaluate \
+    --eval_type metamon \
+    --agent Kakuna \
+    --opponent_config metamon/rl/evaluate/ladder_self_play/example_config.yaml \
+    ...
+```
+
+Use ``--eval_player_side 1`` for Showdown ``p2``. Use ``--no-opponent-sample`` for
+deterministic opponent argmax.
+
 ### Common Flags
 
 | Flag | Default | Description |

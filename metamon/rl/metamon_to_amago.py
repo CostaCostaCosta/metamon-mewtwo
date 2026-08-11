@@ -1,5 +1,9 @@
-from typing import Optional, Any, Type
+from __future__ import annotations
+
+from typing import Optional, Any, Type, Callable
 import os
+import math
+import random
 import warnings
 
 import gin
@@ -27,7 +31,7 @@ from metamon.il.model import (
     PerceiverEncoder,
 )
 from metamon.tokenizer import PokemonTokenizer, UNKNOWN_TOKEN
-from metamon.data import ParsedReplayDataset
+from metamon.data import ParsedReplayDataset, MetamonDataset
 from metamon.env import (
     TeamSet,
     PokeEnvWrapper,
@@ -36,6 +40,10 @@ from metamon.env import (
     ChallengeByUsername,
     PokeAgentLadder,
 )
+
+# Retries for FIFO trajectory sampling when a file is deleted between refresh
+# and load (concurrent collector eviction / --psro_buffer_trim).
+_FIFO_SAMPLE_RETRIES = 8
 
 try:
     import amago
@@ -260,6 +268,9 @@ def make_placeholder_experiment(
         log_interval=1,
         batch_size=1,
         dloader_workers=0,
+        # amago's default `traj_save_len = 1e10` is a float, which makes
+        # random.randint(*save_every) raise TypeError on env reset. Cast to int.
+        traj_save_len=int(1e10),
         log_to_wandb=log,
         wandb_project=os.environ.get("METAMON_WANDB_PROJECT"),
         wandb_entity=os.environ.get("METAMON_WANDB_ENTITY"),
@@ -269,14 +280,15 @@ def make_placeholder_experiment(
 
 
 class MetamonAMAGOWrapper(amago.envs.AMAGOEnv):
-    """AMAGOEnv wrapper for poke-env gymnasium environments.
+    """AMAGOEnv wrapper for single-env Showdown / pokepy / poke-env gym envs.
 
-    - Extends the observation space with an illegal action mask, which will
-        be passed along to the actor network.
-    - Adds success rate and valid action rate logging.
+    Use with :class:`~metamon.env.vectorized.ShowdownEnv`,
+    :class:`~metamon.env.pokepy_battle.PokepyEnv` (``batched_envs=1``), or
+    :class:`~metamon.env.PokeEnvWrapper`. Run AMAGO in ``env_mode="sync"`` with
+    ``parallel_actors=1`` — not ``already_vectorized``.
     """
 
-    def __init__(self, metamon_env: PokeEnvWrapper):
+    def __init__(self, metamon_env):
         self.metamon_action_space = metamon_env.metamon_action_space
         super().__init__(
             env=metamon_env,
@@ -309,29 +321,169 @@ class MetamonAMAGOWrapper(amago.envs.AMAGOEnv):
         return obs, reward, terminated, truncated, info
 
     def step(self, action):
-        try:
-            next_tstep, reward, terminated, truncated, info = super().step(action)
-            # amago will average these stats over episodes, devices, and parallel actors.
-            if "won" in info:
-                info[f"{AMAGO_ENV_LOG_PREFIX} Win Rate"] = info["won"]
-            if "valid_action_count" in info and "invalid_action_count" in info:
-                info[f"{AMAGO_ENV_LOG_PREFIX} Valid Actions"] = info[
-                    "valid_action_count"
-                ] / (info["valid_action_count"] + info["invalid_action_count"])
-            return next_tstep, reward, terminated, truncated, info
-        except Exception as e:
-            print(e)
-            print("Force resetting due to long-tail error")
-            self.reset()
-            next_tstep, reward, terminated, truncated, info = self.step(action)
-            reward *= 0.0
-            terminated[:] = False
-            truncated[:] = True  # force a proper reset asap
-            return next_tstep, reward, terminated, truncated, info
+        next_tstep, reward, terminated, truncated, info = super().step(action)
+        # amago will average these stats over episodes, devices, and parallel actors.
+        if "won" in info:
+            info[f"{AMAGO_ENV_LOG_PREFIX} Win Rate"] = info["won"]
+        if "valid_action_count" in info and "invalid_action_count" in info:
+            info[f"{AMAGO_ENV_LOG_PREFIX} Valid Actions"] = info[
+                "valid_action_count"
+            ] / (info["valid_action_count"] + info["invalid_action_count"])
+        return next_tstep, reward, terminated, truncated, info
 
     @property
     def env_name(self):
-        return f"{self.env.metamon_battle_format}_vs_{self.env.metamon_opponent_name}"
+        env = self.env
+        if hasattr(env, "env_name"):
+            return env.env_name
+        return f"{env.metamon_battle_format}_vs_{env.metamon_opponent_name}"
+
+
+class VectorizedMetamonAMAGOWrapper(amago.envs.AMAGOEnv):
+    """AMAGOEnv wrapper for batched Showdown / pokepy vector envs (already_vectorized)."""
+
+    def __init__(self, metamon_env):
+        self._metamon_env = metamon_env
+        self.metamon_action_space = metamon_env.metamon_action_space
+        super().__init__(
+            env=metamon_env,
+            env_name="metamon",
+            batched_envs=metamon_env.batched_envs,
+        )
+        assert isinstance(self.action_space, gym.spaces.Discrete)
+        self.observation_space["illegal_actions"] = gym.spaces.Box(
+            low=0,
+            high=1,
+            shape=(self.batched_envs, self.action_space.n),
+            dtype=bool,
+        )
+
+    def add_illegal_action_mask_to_obs(self, obs: dict, info: dict):
+        # VectorizedShowdownEnv already attaches illegal_actions in obs.
+        if "illegal_actions" in obs:
+            return
+        legal_actions = info["legal_actions"]
+        illegal_actions = np.ones((self.batched_envs, self.action_space.n), dtype=bool)
+        for lane in range(self.batched_envs):
+            for agent_legal_action in legal_actions[lane]:
+                illegal_actions[lane, agent_legal_action] = False
+        obs["illegal_actions"] = illegal_actions
+
+    def inner_reset(self, *args, **kwargs):
+        obs, info = self._metamon_env.reset(*args, **kwargs)
+        self.add_illegal_action_mask_to_obs(obs, info)
+        return obs, info
+
+    def inner_step(self, action):
+        action_arr = np.asarray(action).reshape(self._metamon_env.batched_envs)
+        self._metamon_env._step_eval_actions = action_arr.copy()
+        obs, reward, terminated, truncated, info = self._metamon_env.step(action_arr)
+        self.add_illegal_action_mask_to_obs(obs, info)
+        return obs, reward, terminated, truncated, info
+
+    def take_long_break(self):
+        if hasattr(self._metamon_env, "take_long_break"):
+            self._metamon_env.take_long_break()
+
+    def resume_from_break(self):
+        if hasattr(self._metamon_env, "resume_from_break"):
+            self._metamon_env.resume_from_break()
+
+    def step(self, action):
+        next_tstep, reward, terminated, truncated, info = super().step(action)
+        if "won" in info:
+            wins = info["won"]
+            if isinstance(wins, list):
+                # Lanes that did not finish this step report `None`. Hand
+                # AMAGO the per-battle outcomes as an array (not a pre-
+                # averaged scalar) so each finished battle becomes one data
+                # point in SpecialMetricHistory; otherwise AMAGO's final mean
+                # is a mean-of-means biased by how many lanes happen to end
+                # on the same step. (Matches the xland_minigrid example.)
+                finished = [float(w) for w in wins if w is not None]
+                if finished:
+                    info[f"{AMAGO_ENV_LOG_PREFIX} Win Rate"] = np.array(
+                        finished, dtype=np.float32
+                    )
+            else:
+                info[f"{AMAGO_ENV_LOG_PREFIX} Win Rate"] = wins
+        valid = info.get("valid_action_count")
+        invalid = info.get("invalid_action_count")
+        if valid is not None and invalid is not None:
+            if isinstance(valid, list):
+                # One per-battle ratio for each lane that finished this step
+                # (others report None), mirroring how Win Rate is logged so each
+                # finished battle is a single data point in SpecialMetricHistory.
+                ratios = [
+                    v / (v + iv)
+                    for v, iv in zip(valid, invalid)
+                    if v is not None and iv is not None and (v + iv) > 0
+                ]
+                if ratios:
+                    info[f"{AMAGO_ENV_LOG_PREFIX} Valid Actions"] = np.array(
+                        ratios, dtype=np.float32
+                    )
+            else:
+                denom = valid + invalid
+                if denom > 0:
+                    info[f"{AMAGO_ENV_LOG_PREFIX} Valid Actions"] = valid / denom
+        return next_tstep, reward, terminated, truncated, info
+
+    @property
+    def env_name(self):
+        return self.env.env_name
+
+
+def make_metamon_env(*args, **kwargs):
+    """Showdown env with one shared opponent from :mod:`metamon.rl.evaluate.opponent_pool`.
+
+    Pass ``opponent_config`` or ``opponent_config_path`` (ladder self-play YAML).
+    Each full ``reset()`` samples an agent, checkpoint, temperature, and team set.
+    Use AMAGO ``force_reset_on_every=True`` to redraw between training epochs.
+    """
+    from metamon.env.vectorized import BattleAgainstOpponentPool, ShowdownEnv
+
+    opponent_config_path = kwargs.pop("opponent_config_path", None)
+    opponent_config = kwargs.pop("opponent_config", None)
+    opponent_weights_path = kwargs.pop("opponent_weights_path", None)
+    opponent_quota_min_games = kwargs.pop("opponent_quota_min_games", None)
+    opponent_quota_window = kwargs.pop("opponent_quota_window", 128)
+    _block_warnings()
+    menv = BattleAgainstOpponentPool(
+        *args,
+        opponent_config_path=opponent_config_path,
+        opponent_config=opponent_config,
+        opponent_weights_path=opponent_weights_path,
+        opponent_quota_min_games=opponent_quota_min_games,
+        opponent_quota_window=opponent_quota_window,
+        **kwargs,
+    )
+    print(
+        f"Made Metamon Showdown Env ({menv.batched_envs} lanes, opponent pool, "
+        f"eval_side={menv.eval_side})"
+    )
+    if isinstance(menv, ShowdownEnv):
+        return MetamonAMAGOWrapper(menv)
+    return VectorizedMetamonAMAGOWrapper(menv)
+
+
+def make_pokepy_env(*args, **kwargs):
+    """Pokepy env vs another metamon PretrainedModel.
+
+    ``batched_envs=1`` returns :class:`PokepyEnv` wrapped for AMAGO ``sync`` mode.
+    ``batched_envs>1`` returns :class:`VectorizedPokepyEnv` (or a multiprocess
+    orchestrator when ``num_workers>1``) for ``already_vectorized``.
+    """
+    from metamon.env.pokepy_battle.vector_env import BattlePokepyVectorized, PokepyEnv
+
+    _block_warnings()
+    menv = BattlePokepyVectorized(*args, **kwargs)
+    print(
+        f"Made Pokepy Env ({menv.batched_envs} lanes vs {menv.metamon_opponent_name})"
+    )
+    if isinstance(menv, PokepyEnv):
+        return MetamonAMAGOWrapper(menv)
+    return VectorizedMetamonAMAGOWrapper(menv)
 
 
 @gin.configurable
@@ -369,11 +521,19 @@ class MetamonDiscrete(amago.nets.policy_dists.Discrete):
         self, vec: torch.Tensor, log_dict: Optional[dict] = None
     ) -> amago.nets.policy_dists._Categorical:
         scaled_logits = vec / self.temperature
-
         dist = amago.nets.policy_dists._Categorical(logits=scaled_logits)
         probs = dist.probs
-        clip_probs = probs.clamp(self.clip_prob_low, self.clip_prob_high)
-        safe_probs = clip_probs / clip_probs.sum(-1, keepdims=True).detach()
+        # The actor masks illegal actions to -inf before we get here (prob 0).
+        # clip_prob_low would otherwise clamp those zeros back up and resurrect
+        # masked actions, so only clip among the finite (legal) logits.
+        legal = torch.isfinite(scaled_logits)
+        clip_probs = torch.where(
+            legal,
+            probs.clamp(self.clip_prob_low, self.clip_prob_high),
+            torch.zeros_like(probs),
+        )
+        denom = clip_probs.sum(-1, keepdims=True).clamp(min=1e-8)
+        safe_probs = clip_probs / denom.detach()
         safe_dist = amago.nets.policy_dists._Categorical(probs=safe_probs)
 
         if log_dict is not None:
@@ -920,7 +1080,9 @@ class MetamonPokemonSlotTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
             global_token_inputs=obs["global_text_tokens"],
             global_numerical_inputs=global_numbers,
         )
-        add_activation_log("MetamonPokemonSlotTstepEncoder/turn_emb", turn_emb, log_dict)
+        add_activation_log(
+            "MetamonPokemonSlotTstepEncoder/turn_emb", turn_emb, log_dict
+        )
         return turn_emb
 
 
@@ -1263,8 +1425,19 @@ class MetamonGroupedTstepEncoderV2(amago.nets.tstep_encoders.TstepEncoder):
         qk_norm: bool = False,
         ff_mult: int = 4,
         pokemon_role_emb: bool = False,
+        pokemon_num_len: Optional[int] = None,
     ):
         super().__init__(obs_space=obs_space, rl2_space=rl2_space)
+
+        # Per-Pokemon numeric width. Default: infer from the observation space so
+        # variants like GroupedStatsObservationSpace (37) work without an encoder
+        # config change; falls back to the class default (31) and is overridable
+        # via gin (`pokemon_num_len`).
+        self.POKEMON_NUM_LEN = (
+            pokemon_num_len
+            if pokemon_num_len is not None
+            else obs_space["numbers_active_pokemon"].shape[-1]
+        )
 
         self.extra_emb = nn.Linear(rl2_space.shape[-1], extra_emb_dim)
 
@@ -1523,7 +1696,6 @@ class MetamonAMAGODataset(RLDataset):
         return None
 
     def on_end_of_collection(self, experiment) -> dict[str, Any]:
-        # TODO: implement FIFO replay buffer
         if self.refresh_files_every_epoch:
             self.parsed_replay_dset.refresh_files()
         return {"Num Replays": len(self.parsed_replay_dset)}
@@ -1537,48 +1709,282 @@ class MetamonAMAGODataset(RLDataset):
 
     def _process_data(self, data):
         obs, action_infos, rewards, dones = data
-        # amago expects discrete actions to be one-hot encoded
         num_actions = self.parsed_replay_dset.action_space.gym_space.n
         actions_torch = F.one_hot(
             torch.tensor(action_infos["chosen"]).long().clamp(min=0),
             num_classes=num_actions,
         ).float()
 
-        # set all illegal. needs to be one timestep longer than the actions to match the size of observations
         illegal_actions = torch.ones(
             (len(action_infos["chosen"]) + 1, num_actions)
         ).bool()
         for i, legal_actions in enumerate(action_infos["legal"]):
             for legal_action in legal_actions:
                 legal_universal_action = UniversalAction(action_idx=legal_action)
-                # discrete action spaces don't need a state input...
                 legal_agent_action = (
                     self.parsed_replay_dset.action_space.action_to_agent_output(
                         state=None, action=legal_universal_action
                     )
                 )
-                # set the action legal
                 illegal_actions[i, legal_agent_action] = False
 
-        # a bit of a hack: put action info in the amago observation dict, let the network ignore it,
-        # and make it accessible to mask the actor/critic loss later on.
         obs_torch = {k: torch.from_numpy(np.stack(v, axis=0)) for k, v in obs.items()}
-        # add a final missing action to match the size of observations
         missing_acts = torch.tensor(action_infos["missing"] + [True]).unsqueeze(-1)
         obs_torch["missing_action_mask"] = missing_acts
-        # the environment wrappers also add illegal_actions to the obs
         obs_torch["illegal_actions"] = illegal_actions
         rewards_torch = torch.from_numpy(rewards).unsqueeze(-1)
         dones_torch = torch.from_numpy(dones).unsqueeze(-1)
         time_idxs = torch.arange(len(action_infos["chosen"]) + 1).long().unsqueeze(-1)
-        rl_data = RLData(
+        return RLData(
             obs=obs_torch,
             actions=actions_torch,
             rews=rewards_torch,
             dones=dones_torch,
             time_idxs=time_idxs,
         )
-        return rl_data
+
+
+class MetamonFIFODataset(MetamonAMAGODataset):
+    """Online replay buffer backed by metamon ``json.lz4`` trajectories on disk.
+
+    Vectorized envs write finished battles to ``{buffer_root}/{format}/``; this
+    dataset rescans that tree each epoch and evicts the oldest files when the
+    buffer exceeds ``dset_max_size``. Training begins once
+    ``len(dset) > dset_min_size`` (mirrors AMAGO ``DiskTrajDataset``).
+    """
+
+    def __init__(
+        self,
+        parsed_replay_dset: MetamonDataset,
+        dset_max_size: int,
+        dset_min_size: int = 1,
+        dset_name: Optional[str] = None,
+        opponent_weight_provider: Optional["Callable[[], dict[str, float]]"] = None,
+        teamset_weights: Optional[dict[str, float]] = None,
+        default_teamset_weight: float = 1.0,
+    ):
+        super().__init__(
+            parsed_replay_dset=parsed_replay_dset,
+            dset_name=dset_name or "Online FIFO Buffer",
+            refresh_files_every_epoch=True,
+        )
+        self.dset_max_size = dset_max_size
+        self.dset_min_size = dset_min_size
+        # PSRO-Lite per-trajectory reweighting (v1). When set, ``sample_random_trajectory``
+        # draws files in proportion to the current per-opponent weight instead of
+        # uniformly. The provider reads the same ``meta_weights.json`` sidecar the
+        # env reads; files whose opponent isn't in the sidecar get a uniform fallback.
+        self._opponent_weight_provider = opponent_weight_provider
+        # Teamset-aware FIFO up-sampling: when set, the per-file weight is multiplied
+        # by ``teamset_weights[<teamset>]`` (parsed from the ``_ts-`` filename token).
+        # Files with no ``_ts-`` token or an unlisted teamset get
+        # ``default_teamset_weight``. Use this to shift the learner's online mix
+        # toward under-represented learner-teamset trajectories (e.g. up-weight
+        # smogon battles so the policy trains on those compositions more).
+        # Composes multiplicatively with ``opponent_weight_provider`` when both set.
+        self._teamset_weights = teamset_weights
+        self._default_teamset_weight = float(default_teamset_weight)
+        self._weighted_index: Optional[tuple[list[str], np.ndarray]] = None
+
+    @property
+    def ready_for_training(self) -> bool:
+        return (
+            super().ready_for_training
+            and len(self.parsed_replay_dset) > self.dset_min_size
+        )
+
+    def _scan_disk_mtimes(self) -> list[tuple[float, str]]:
+        """Single ``scandir`` pass over the on-disk format dirs.
+
+        Returns ``(mtime, abspath)`` for every replay file. We scan the directory
+        tree directly (rather than ``parsed_replay_dset.filenames``) so eviction
+        is independent of the dataset's filename filters, and we read mtime from
+        the ``DirEntry`` stat instead of a separate ``os.path.getmtime`` call per
+        file -- one stat round-trip each, which matters when the buffer holds
+        hundreds of thousands of files on NFS.
+        """
+        dset = self.parsed_replay_dset
+        entries: list[tuple[float, str]] = []
+        for fmt in dset.formats:
+            if dset._format_is_tar.get(fmt, False):
+                continue
+            fmt_dir = os.path.join(dset.dset_root, fmt)
+            try:
+                with os.scandir(fmt_dir) as it:
+                    for entry in it:
+                        name = entry.name
+                        if not name.endswith((".json", ".json.lz4")):
+                            continue
+                        try:
+                            entries.append((entry.stat().st_mtime, entry.path))
+                        except OSError:
+                            continue
+            except (OSError, FileNotFoundError):
+                continue
+        return entries
+
+    def _evict_oldest(self) -> int:
+        """Delete oldest on-disk trajectories until ``dset_max_size`` is satisfied."""
+        files = self._scan_disk_mtimes()
+        num_to_remove = max(len(files) - self.dset_max_size, 0)
+        if num_to_remove <= 0:
+            return 0
+        files.sort(key=lambda x: x[0])
+        removed = 0
+        for _, path in files[:num_to_remove]:
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+        return removed
+
+    def _rebuild_weighted_index(self) -> None:
+        """Build a ``(filepaths, weights)`` index for per-trajectory reweighting.
+
+        Called after each ``refresh_files()``. The per-file weight is the product
+        of two optional factors (either or both may be disabled):
+
+        1. **Opponent weight** (``opponent_weight_provider``): maps each file's
+           opponent token (parsed from the filename) to the current per-agent
+           weight from the PSRO-Lite sidecar. Files whose opponent isn't in the
+           sidecar get a uniform fallback (``1/N``).
+        2. **Teamset weight** (``teamset_weights``): maps each file's learner
+           teamset (the ``_ts-<teamset>`` filename token) to a static up-sampling
+           multiplier. Files with no token or an unlisted teamset get
+           ``default_teamset_weight``.
+
+        When neither is set, the index is cleared and ``sample_random_trajectory``
+        falls back to uniform. On any error, the index is cleared (uniform fallback).
+        """
+        from metamon.rl.psro_lite import parse_trajectory_filename, match_agent_name
+
+        provider = self._opponent_weight_provider
+        ts_weights = self._teamset_weights
+        if provider is None and ts_weights is None:
+            self._weighted_index = None
+            return
+        try:
+            weights_map = provider() if provider is not None else None
+        except Exception:
+            self._weighted_index = None
+            return
+        # Opponent reweighting needs a non-empty sidecar to be meaningful; teamset
+        # reweighting alone is valid (base weight = uniform, then multiplied).
+        if provider is not None and not weights_map:
+            self._weighted_index = None
+            return
+        agent_names = list(weights_map.keys()) if weights_map else []
+        filenames = list(self.parsed_replay_dset.filenames)
+        if not filenames:
+            self._weighted_index = None
+            return
+        file_weights = np.zeros(len(filenames), dtype=np.float64)
+        uniform = 1.0 / max(len(filenames), 1)
+        matched = 0
+        for i, fn in enumerate(filenames):
+            parsed = parse_trajectory_filename(fn)
+            opp_label, teamset, _result = (
+                parsed if parsed is not None else (None, None, None)
+            )
+            # Base weight: opponent weight if the provider is set, else uniform.
+            if provider is not None:
+                if parsed is None:
+                    w = uniform
+                else:
+                    agent = match_agent_name(opp_label, agent_names)
+                    if agent is None:
+                        w = uniform
+                    else:
+                        w = float(weights_map.get(agent, 0.0))
+                        if w <= 0.0 or not math.isfinite(w):
+                            w = uniform
+            else:
+                w = uniform
+            # Teamset multiplier (composes multiplicatively with opponent weight).
+            if ts_weights is not None:
+                ts_w = (
+                    ts_weights.get(teamset, self._default_teamset_weight)
+                    if teamset is not None
+                    else self._default_teamset_weight
+                )
+                w *= float(ts_w)
+            if w > 0.0 and math.isfinite(w):
+                matched += 1
+            file_weights[i] = w
+        if matched == 0:
+            self._weighted_index = None
+            return
+        total = file_weights.sum()
+        if total <= 0.0:
+            self._weighted_index = None
+            return
+        file_weights = file_weights / total
+        self._weighted_index = (filenames, file_weights)
+
+    def on_end_of_collection(self, experiment) -> dict[str, Any]:
+        """Mirror ``DiskTrajDataset.on_end_of_collection`` (amago.loading).
+
+        All ranks rescan/resync the file list; only ``has_edit_rights`` processes
+        (the learner) evict on the main rank, then all ranks refresh again.
+        Collectors set ``has_dset_edit_rights=False`` and only perform the reads.
+        Rebuilds the per-trajectory weight index after the final refresh so the
+        learner's online 40%% mixture tracks the meta-distribution every epoch.
+        """
+        self.parsed_replay_dset.refresh_files()
+        if not self.has_edit_rights:
+            return {"FIFO Buffer Size": len(self.parsed_replay_dset)}
+        old_size = len(self.parsed_replay_dset)
+        experiment.accelerator.wait_for_everyone()
+        if experiment.accelerator.is_main_process:
+            self._evict_oldest()
+        experiment.accelerator.wait_for_everyone()
+        self.parsed_replay_dset.refresh_files()
+        new_size = len(self.parsed_replay_dset)
+        if (
+            self._opponent_weight_provider is not None
+            or self._teamset_weights is not None
+        ):
+            self._rebuild_weighted_index()
+        return {
+            "FIFO Buffer Size": new_size,
+            "FIFO Files Deleted": old_size - new_size,
+            "FIFO Files Before Eviction": old_size,
+        }
+
+    def sample_random_trajectory(self) -> RLData:
+        """Draw a trajectory, weighted by per-opponent PSRO-Lite weights when active.
+
+        Retries on ``FileNotFoundError``: the FIFO buffer is shared across the
+        collector (which appends and, with ``--psro_buffer_trim``, can evict)
+        and the learner (which samples). A file present at refresh time may be
+        deleted before a dataloader worker reads it. We re-pick rather than
+        crashing — the next ``on_end_of_collection`` refresh will drop it from
+        the index.
+        """
+        for _ in range(_FIFO_SAMPLE_RETRIES):
+            try:
+                idx = self._weighted_index
+                if idx is not None:
+                    filenames, weights = idx
+                    i = int(np.random.choice(len(filenames), p=weights))
+                    data = self.parsed_replay_dset.load_filename(filenames[i])
+                else:
+                    data = self.parsed_replay_dset.random_sample()
+                return self._process_data(data)
+            except FileNotFoundError:
+                continue
+        # All retries missed (e.g. a mass eviction wiped the indexed files
+        # between refreshes). Fall back to a fresh uniform pick over whatever
+        # the dataset currently lists — by the next epoch the index is rebuilt.
+        fn = random.choice(self.parsed_replay_dset.filenames)
+        return self._process_data(self.parsed_replay_dset.load_filename(fn))
+
+    def get_description(self) -> str:
+        return (
+            f"Metamon FIFO Buffer ({self.dset_name}, "
+            f"max={self.dset_max_size}, min>{self.dset_min_size})"
+        )
 
 
 @gin.configurable
@@ -1631,6 +2037,16 @@ class MetamonAMAGOExperiment(amago.Experiment):
         policy.edit_actor_mask = _edit_actor_mask
         policy.edit_critic_mask = _edit_critic_mask
 
+    def write_latest_policy(self) -> None:
+        """Main-process-only atomic write so multi-GPU learners do not race on NFS."""
+        if not self.accelerator.is_main_process:
+            return
+        ckpt_dir = os.path.join(self.ckpt_dir, "latest")
+        ckpt_name = os.path.join(ckpt_dir, "policy.pt")
+        tmp_name = os.path.join(ckpt_dir, "policy.pt.tmp")
+        torch.save(self.policy.state_dict(), tmp_name)
+        os.replace(tmp_name, ckpt_name)
+
     def train_step(self, batch: Batch, log_step: bool):
         fbc_filter = self.policy.fbc_filter_func
         if hasattr(fbc_filter, "set_mask"):
@@ -1643,3 +2059,194 @@ class MetamonAMAGOExperiment(amago.Experiment):
             seq_mask = (~(batch.rl2s == MAGIC_PAD_VAL).all(-1, keepdim=True)).bool()
             fbc_filter.set_seq_mask(seq_mask)
         return super().train_step(batch, log_step=log_step)
+
+
+_ONLINE_EXPERIMENT_GIN_PARAMS = (
+    "agent_type",
+    "tstep_encoder_type",
+    "traj_encoder_type",
+    "max_seq_len",
+    "learning_rate",
+    "lr_warmup_steps",
+    "l2_coeff",
+    "grad_clip",
+)
+
+
+def mirror_online_experiment_gin_bindings() -> None:
+    """Copy ``MetamonAMAGOExperiment`` gin scope onto ``MetamonOnlineExperiment``."""
+    for param in _ONLINE_EXPERIMENT_GIN_PARAMS:
+        src = f"{MetamonAMAGOExperiment.__name__}.{param}"
+        dst = f"{MetamonOnlineExperiment.__name__}.{param}"
+        try:
+            gin.bind_parameter(dst, gin.query_parameter(src))
+        except ValueError:
+            pass
+
+
+@gin.configurable
+class MetamonOnlineExperiment(MetamonAMAGOExperiment):
+    """Online RL experiment with per-lane AMAGO policy temperature during collection."""
+
+    def __init__(
+        self,
+        temp_low: float = 1.0,
+        temp_high: float = 2.0,
+        gin_config: Optional[dict] = None,
+        gin_config_files: Optional[list[str]] = None,
+        gin_extra_bindings: Optional[dict] = None,
+        psro_config: Optional["PsroConfig"] = None,
+        epoch_ref: Optional["object"] = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.temp_low = temp_low
+        self.temp_high = temp_high
+        self._gin_config = gin_config
+        self._gin_config_files = gin_config_files
+        self._gin_extra_bindings = gin_extra_bindings or {}
+        # PSRO-Lite: None ⇒ disabled (current uniform behavior). Only the
+        # collector process drives ``step()``; the learner/validator pass a
+        # ``PsroConfig`` for config symmetry but never write the sidecar.
+        self._psro: Optional["PsroLite"] = None
+        if psro_config is not None:
+            from metamon.rl.psro_lite import PsroLite
+
+            self._psro = PsroLite(config=psro_config)
+        self._psro_trimmed = False
+        # Team-mix schedule: a shared EpochRef (from a ScheduleState) held so the
+        # experiment can bump it to ``self.epoch`` at the start of each collection
+        # cycle, advancing the curriculum for every schedule-aware team set
+        # (player + opponent pool "@schedule" agents) that references it. None ⇒
+        # no schedule (static team set / mix spec behavior). The caller sets the
+        # initial epoch (e.g. the resumed epoch) before the first collection.
+        self._epoch_ref = epoch_ref
+
+    def _reload_gin(self) -> None:
+        """Re-apply gin after env init (opponent ``initialize_agent`` clears gin).
+
+        Collection envs load opponents during ``init_envs``. Each opponent load
+        calls ``gin.clear_config()`` and rebinds that opponent's scope, leaving
+        global gin holding the *last* opponent's bindings. Some opponents set
+        params the trainee config does not (e.g. ``Multigammas.discrete``), so we
+        must ``clear_config`` before re-applying the trainee scope -- otherwise a
+        leaked binding (e.g. a 2-gamma opponent) silently changes the trainee
+        architecture and the published ``latest/policy.pt`` fails to load.
+
+        Validation envs also load opponents, so they need the same treatment.
+        Learn-only uses placeholder train *and* val envs (no opponents), so gin
+        stays locked from ``create_online_experiment`` and must not be rebound.
+        """
+        loads_opponents = (
+            self.train_timesteps_per_epoch > 0 or self.val_timesteps_per_epoch > 0
+        )
+        if not loads_opponents:
+            return
+        if self._gin_config is not None and self._gin_config_files is not None:
+            gin.clear_config()
+            amago.cli_utils.use_config(
+                self._gin_config, self._gin_config_files, finalize=False
+            )
+            for name, value in self._gin_extra_bindings.items():
+                try:
+                    gin.bind_parameter(name, value)
+                except ValueError:
+                    pass
+            mirror_online_experiment_gin_bindings()
+            gin.finalize()
+
+    def start(self):
+        self.init_dsets()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            warnings.filterwarnings("always", category=amago.utils.AmagoWarning)
+            env_summary = self.init_envs()
+        self._reload_gin()
+        self.init_dloaders()
+        self.init_model()
+        self.init_checkpoints()
+        self.init_logger()
+        if self.verbose:
+            self.summary(env_summary=env_summary)
+
+    def _reset_policy_temperature(self) -> None:
+        policy_dist = self.policy.actor.policy_dist
+        device = next(self.policy.parameters()).device
+        policy_dist.temperature = torch.tensor(1.0, device=device)
+
+    def collect_new_training_data(self) -> None:
+        policy_dist = self.policy.actor.policy_dist
+        device = next(self.policy.parameters()).device
+        n = self.parallel_actors
+        temps = torch.empty(n, device=device).uniform_(self.temp_low, self.temp_high)
+        policy_dist.temperature = temps.view(n, 1, 1, 1)
+        # Advance the shared schedule EpochRef to the current epoch before
+        # collecting so schedule-aware team sets (player + opponent pool
+        # "@schedule" agents) refresh their weights for this epoch on the next
+        # ``yield_team()``. No-op when no schedule is set.
+        if self._epoch_ref is not None:
+            self._epoch_ref.epoch = self.epoch
+        try:
+            super().collect_new_training_data()
+        finally:
+            self._reset_policy_temperature()
+        self._psro_step()
+
+    def _psro_step(self) -> None:
+        """Refresh PSRO-Lite weights + write the sidecar (collector process only).
+
+        Gated on ``self.epoch >= start_epoch``. Forces one update on the start
+        epoch itself so the sidecar exists from the first prioritized collection
+        epoch, then respects ``update_interval`` thereafter. Before the start
+        epoch nothing is written, so readers see no file and stay uniform.
+        Also performs the one-time ``--psro_buffer_trim`` eviction on the start
+        epoch to accelerate turnover of the uniform-sampled backlog.
+        """
+        psro = self._psro
+        if psro is None:
+            return
+        cfg = psro.config
+        if self.epoch < cfg.start_epoch:
+            return
+        # One-time buffer trim at the start epoch (main process only).
+        if not self._psro_trimmed and cfg.buffer_trim is not None:
+            if getattr(self.accelerator, "is_main_process", True):
+                removed = psro.trim_buffer()
+                if removed:
+                    print(
+                        f"  [psro] buffer trim: evicted {removed} files "
+                        f"→ target {cfg.buffer_trim}",
+                        flush=True,
+                    )
+            self._psro_trimmed = True
+        first = self.epoch == cfg.start_epoch
+        if not (first or self.epoch % max(cfg.update_interval, 1) == 0):
+            return
+        if not getattr(self.accelerator, "is_main_process", True):
+            return
+        weights, diag = psro.step(epoch=self.epoch)
+        # Log per-opponent diagnostics to the wandb ``psro/`` panel.
+        log_dict: dict[str, Any] = {}
+        for name in cfg.agent_names:
+            d = diag.get(name, {})
+            log_dict[f"{name}/n"] = d.get("n", 0)
+            wr = d.get("win_rate")
+            log_dict[f"{name}/win_rate"] = wr if wr is not None else 0.0
+            log_dict[f"{name}/weight"] = d.get("weight", 0.0)
+            # Per learner-teamset win-rate curves (``psro/<agent>/<teamset>/...``).
+            # Diagnostic only; the solver weights use the overall aggregate. The
+            # teamset is the concrete set the learner drew for each battle
+            # (recorded in the trajectory filename by the collector);
+            # ``_unknown`` groups pre-token / random-format files.
+            for ts_name, ts_d in (d.get("per_teamset") or {}).items():
+                log_dict[f"{name}/{ts_name}/n"] = ts_d.get("n", 0)
+                ts_wr = ts_d.get("win_rate")
+                log_dict[f"{name}/{ts_name}/win_rate"] = (
+                    ts_wr if ts_wr is not None else 0.0
+                )
+        log_dict["weight_entropy"] = diag.get("_weight_entropy", 0.0)
+        log_dict["sidecar_write_ok"] = int(bool(diag.get("_sidecar_write_ok", False)))
+        try:
+            self.log(log_dict, key="psro")
+        except Exception:
+            pass

@@ -1,0 +1,82 @@
+# High-level gen1ou opponent pool for online RL training collection.
+# Each agent samples a checkpoint below its default (null = default/best) and a temperature.
+# num_agents (defaults or per-agent) duplicates pool rows → higher sample weight.
+# Verify checkpoint epochs exist on HuggingFace before long runs.
+defaults:
+  team_set: "@schedule"
+  battle_backend: metamon
+  checkpoints: [null]
+  temperatures: [1.0, 1.25, 1.5, 1.75, 2.0]
+  num_agents: 1
+
+agents:
+  TaurosV0:
+    model_name: TaurosV0
+    num_agents: 2
+    # default ckpt 62; verify epochs exist on HF / adjust
+    checkpoints: "range(50, 63, 2)"
+
+  Kakuna:
+    model_name: Kakuna
+    num_agents: 2
+    checkpoints: "range(24, 35, 2)"
+
+  Alakazam:
+    model_name: Alakazam
+    checkpoints: "range(2, 9, 2)"
+
+  SyntheticRLV2:
+    model_name: SyntheticRLV2
+    checkpoints: "range(36, 49, 2)"
+
+  V2ADataAblation:
+    model_name: V2AGroupedV2DataAblation
+    checkpoints: "range(74, 91, 2)"
+
+  Superkazam:
+    model_name: Superkazam
+    checkpoints: "range(38, 51, 2)"
+
+  Kadabra3:
+    model_name: Kadabra3
+    checkpoints: "range(10, 21, 2)"
+
+  # PSRO self-play from the v1.3 run (competitive/smogon curriculum).
+  #
+  # IMPORTANT: only smogon-side self-play specialists belong here. gl-pinned
+  # specialists (team_set: gl_05_26) were tried and removed: when the learner
+  # draws smogon (80% of @schedule) and the gl-pinned opponent draws gl, the
+  # result is a composition-mismatch blowout (smogon WR ~0.08). The PSRO solver
+  # scores opponents on AGGREGATE WR, so it can't distinguish this mismatch
+  # from a fixable strategic gap — it boosts the gl specialist to ~90% of
+  # sampling weight, flooding the buffer with harmful trajectories and dropping
+  # the Tauros canary ~4 points in <3h. The learner's teamset is schedule-
+  # controlled (not opponent-controlled), so there is no way to make gl
+  # specialists productive without an opponent-aware teamset-selection code
+  # change. Do NOT re-add gl-pinned past selves until that exists.
+  #
+  # Smogon specialist: latest smogon-trained self on the current @schedule
+  # (phase 3/4: smogon-heavy). The true self-play peer on the target dist.
+  MiniOnlinePsroV1_3:
+    model_name: MiniOnlinePsroV1_3
+    num_agents: 1
+    checkpoints: [1760]
+  # Pass2 specialist: mid-specialization self on the broad smogon_pass2 set
+  # (epoch 1500, partway into the smogon curriculum).
+  MiniOnlinePsroV1_3P2:
+    model_name: MiniOnlinePsroV1_3
+    num_agents: 1
+    team_set: smogon_pass2
+    checkpoints: [1500]
+
+  # Smogon-side self-play specialist from THIS run (added by monitor at val WR >= 0.50 / new high).
+  MiniOnlineSmogonV0_500:
+    model_name: squirtle
+    num_agents: 1
+    checkpoints: [500]
+
+  # Smogon-side self-play specialist from THIS run (added by monitor at val WR >= 0.50 / new high).
+  MiniOnlineSmogonV0_825:
+    model_name: squirtle
+    num_agents: 1
+    checkpoints: [825]

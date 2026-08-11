@@ -16,6 +16,7 @@ from metamon.rl.metamon_to_amago import (
     make_local_ladder_env,
     make_pokeagent_ladder_env,
     make_challenge_env,
+    make_metamon_env,
 )
 from metamon.rl.showdown_preview import run_showdown_with_preview, showdown_preview_url
 
@@ -37,6 +38,7 @@ def pretrained_vs_baselines(
     total_battles: int = 250,
     parallel_actors_per_baseline: int = 5,
     action_temperature: float = 1.0,
+    agent_sample: bool = True,
     async_mp_context: str = "forkserver",
     battle_backend: str = "metamon",
     log_to_wandb: bool = False,
@@ -53,6 +55,7 @@ def pretrained_vs_baselines(
     agent = pretrained_model.initialize_agent(
         checkpoint=checkpoint, log=log_to_wandb, action_temperature=action_temperature
     )
+    agent.sample_actions_val = agent_sample
     baselines = baselines or HEURISTIC_COMPOSITE_BASELINES
     agent.async_env_mp_context = async_mp_context
     # create envs that match the agent's observation/actions/rewards
@@ -85,6 +88,107 @@ def pretrained_vs_baselines(
     return results
 
 
+def pretrained_vs_metamon(
+    pretrained_model: PretrainedModel,
+    battle_format: str,
+    team_set: metamon.env.TeamSet,
+    team_set_name: str,
+    checkpoint: Optional[int] = None,
+    total_battles: int = 250,
+    num_parallel: int = 8,
+    n_workers: int = 1,
+    opponent_gpu_idx: Optional[int] = None,
+    action_temperature: float = 1.0,
+    agent_sample: bool = True,
+    opponent_sample: bool = True,
+    eval_player_side: int = 0,
+    log_to_wandb: bool = False,
+    save_trajectories_to: Optional[str] = None,
+    save_results_to: Optional[str] = None,
+    seed: Optional[int] = None,
+    opponent_agent: Optional[str] = None,
+    opponent_checkpoint: Optional[int] = None,
+    opponent_config_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Evaluate via vectorized Showdown with one shared opponent from a pool config.
+
+    With ``opponent_agent``, builds a minimal one-agent config from the CLI name
+    and ``team_set_name``. With ``opponent_config_path``, loads a full YAML pool.
+    Each env ``reset()`` samples an agent, then checkpoint / temperature / team set.
+    """
+    import yaml
+
+    from metamon.rl.evaluate.opponent_pool import (
+        load_opponent_pool,
+        load_simple_opponent_pool,
+        make_simple_opponent_pool_dict,
+    )
+
+    if opponent_config_path:
+        if opponent_agent:
+            raise ValueError("Use either opponent_config_path or opponent_agent")
+        pool_config = load_opponent_pool(
+            opponent_config_path, battle_format=battle_format
+        )
+    else:
+        if not opponent_agent:
+            raise ValueError("Provide opponent_agent or opponent_config_path")
+        pool_dict = make_simple_opponent_pool_dict(
+            opponent_agent=opponent_agent,
+            team_set=team_set_name,
+            checkpoint=opponent_checkpoint,
+            temperature=1.0,
+        )
+        print("Opponent pool config (auto-generated from CLI):")
+        print(yaml.dump(pool_dict, default_flow_style=False, sort_keys=False))
+        pool_config = load_simple_opponent_pool(
+            opponent_agent=opponent_agent,
+            battle_format=battle_format,
+            team_set=team_set_name,
+            checkpoint=opponent_checkpoint,
+            temperature=1.0,
+        )
+
+    agent = pretrained_model.initialize_agent(
+        checkpoint=checkpoint, log=log_to_wandb, action_temperature=action_temperature
+    )
+    agent.sample_actions_val = agent_sample
+    env_kwargs = dict(
+        battle_format=battle_format,
+        observation_space=pretrained_model.observation_space,
+        action_space=pretrained_model.action_space,
+        reward_function=pretrained_model.reward_function,
+        team_set=team_set,
+        opponent_config=pool_config,
+        batched_envs=num_parallel,
+        n_workers=n_workers,
+        opponent_sample=opponent_sample,
+        eval_player_side=eval_player_side,
+        save_trajectories_to=save_trajectories_to,
+        save_results_to=save_results_to,
+        opponent_gpu_idx=opponent_gpu_idx,
+        seed=seed,
+    )
+    make_env = functools.partial(make_metamon_env, **env_kwargs)
+    if num_parallel == 1:
+        agent.env_mode = "sync"
+        agent.parallel_actors = 1
+        results = agent.evaluate_test(
+            [make_env],
+            timesteps=max(total_battles * 250, 250),
+            episodes=total_battles,
+        )
+    else:
+        agent.env_mode = "already_vectorized"
+        agent.parallel_actors = num_parallel
+        results = agent.evaluate_test(
+            make_env,
+            timesteps=max(total_battles * 250 // num_parallel, 250),
+            episodes=total_battles,
+        )
+    return results
+
+
 def _pretrained_on_ladder(
     pretrained_model: PretrainedModel,
     make_ladder: Callable,
@@ -92,6 +196,7 @@ def _pretrained_on_ladder(
     checkpoint: Optional[int],
     log_to_wandb: bool,
     action_temperature: float = 1.0,
+    agent_sample: bool = True,
     team_preview_model: Optional[TeamPreviewModel] = None,
     step_preview: bool = False,
     step_preview_host: str = "127.0.0.1",
@@ -103,6 +208,7 @@ def _pretrained_on_ladder(
     agent = pretrained_model.initialize_agent(
         checkpoint=checkpoint, log=log_to_wandb, action_temperature=action_temperature
     )
+    agent.sample_actions_val = agent_sample
     agent.env_mode = "sync"
     agent.parallel_actors = 1
     agent.verbose = False  # turn off tqdm progress bar and print poke-env battle status
@@ -148,6 +254,7 @@ def pretrained_vs_local_ladder(
     checkpoint: Optional[int] = None,
     battle_backend: str = "metamon",
     action_temperature: float = 1.0,
+    agent_sample: bool = True,
     save_trajectories_to: Optional[str] = None,
     save_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
@@ -176,6 +283,7 @@ def pretrained_vs_local_ladder(
         checkpoint=checkpoint,
         log_to_wandb=log_to_wandb,
         action_temperature=action_temperature,
+        agent_sample=agent_sample,
         team_preview_model=team_preview_model,
         player_username=username,
         player_avatar=avatar,
@@ -202,6 +310,7 @@ def pretrained_vs_pokeagent_ladder(
     checkpoint: Optional[int] = None,
     battle_backend: str = "metamon",
     action_temperature: float = 1.0,
+    agent_sample: bool = True,
     save_trajectories_to: Optional[str] = None,
     save_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
@@ -230,6 +339,7 @@ def pretrained_vs_pokeagent_ladder(
         checkpoint=checkpoint,
         log_to_wandb=log_to_wandb,
         action_temperature=action_temperature,
+        agent_sample=agent_sample,
         team_preview_model=team_preview_model,
         player_username=username,
         player_password=password,
@@ -258,6 +368,7 @@ def pretrained_vs_challenge(
     checkpoint: Optional[int] = None,
     battle_backend: str = "metamon",
     action_temperature: float = 1.0,
+    agent_sample: bool = True,
     save_trajectories_to: Optional[str] = None,
     save_results_to: Optional[str] = None,
     log_to_wandb: bool = False,
@@ -290,6 +401,7 @@ def pretrained_vs_challenge(
         checkpoint=checkpoint,
         log_to_wandb=log_to_wandb,
         action_temperature=action_temperature,
+        agent_sample=agent_sample,
         team_preview_model=team_preview_model,
         player_username=username,
         opponent_username=opponent_username,
@@ -354,6 +466,31 @@ def _get_default_eval(args, base_eval_kwargs):
             }
         )
         return pretrained_vs_challenge
+    elif args.eval_type == "metamon":
+        base_eval_kwargs.pop("battle_backend", None)
+        base_eval_kwargs.pop("team_preview_model", None)
+        if args.opponent_config and args.opponent_agent:
+            raise ValueError(
+                "Use either --opponent_config or --opponent_agent, not both"
+            )
+        if not args.opponent_config and not args.opponent_agent:
+            raise ValueError(
+                "--eval_type metamon requires --opponent_agent or --opponent_config"
+            )
+        base_eval_kwargs.update(
+            {
+                "team_set_name": args.team_set,
+                "opponent_agent": args.opponent_agent,
+                "opponent_checkpoint": args.opponent_checkpoint,
+                "opponent_config_path": args.opponent_config,
+                "num_parallel": args.num_parallel,
+                "n_workers": args.n_workers,
+                "opponent_sample": args.opponent_sample,
+                "eval_player_side": args.eval_player_side,
+                "opponent_gpu_idx": args.opponent_gpu_idx,
+            }
+        )
+        return pretrained_vs_metamon
     else:
         raise ValueError(f"Invalid evaluation type: {args.eval_type}")
 
@@ -419,6 +556,7 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
                     "battle_backend": backend,
                     "save_trajectories_to": args.save_trajectories_to,
                     "action_temperature": args.temperature,
+                    "agent_sample": args.agent_sample,
                     "save_results_to": args.save_results_to,
                     "log_to_wandb": args.log_to_wandb,
                     "team_preview_model": team_preview_model,
@@ -440,6 +578,8 @@ def _run_default_evaluation(args) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def add_cli(parser):
+    import argparse
+
     parser.add_argument(
         "--agent",
         required=True,
@@ -449,14 +589,15 @@ def add_cli(parser):
     parser.add_argument(
         "--eval_type",
         required=True,
-        choices=["heuristic", "il", "ladder", "pokeagent", "challenge"],
+        choices=["heuristic", "il", "ladder", "pokeagent", "challenge", "metamon"],
         help=(
             "Type of evaluation to perform. 'heuristic' will run against 6 "
             "heuristic baselines, 'il' will run against a BCRNN baseline, "
             "'ladder' will queue the agent for battles on your self-hosted Showdown ladder, "
             "'pokeagent' will submit the agent to the NeurIPS 2025 PokéAgent Challenge ladder, "
             "'challenge' will send/accept challenges to a specific opponent by username "
-            "(launch two instances with opposite --role for head-to-head)."
+            "(launch two instances with opposite --role for head-to-head), "
+            "'metamon' runs vectorized Showdown self-play vs another pretrained model."
         ),
     )
     parser.add_argument(
@@ -532,7 +673,7 @@ def add_cli(parser):
         "--battle_backend",
         type=str,
         default=None,
-        choices=["poke-env", "metamon", "pokeagent"],
+        choices=["poke-env", "metamon", "pokeagent", "pokepy"],
         help=(
             "Method for interpreting Showdown's requests and simulator messages. "
             "Handles backwards-compatibility for models trained on old versions of metamon. "
@@ -557,6 +698,75 @@ def add_cli(parser):
         "--save_results_to",
         default=None,
         help="Directory to save per-battle result logs.",
+    )
+    parser.add_argument(
+        "--opponent_agent",
+        default=None,
+        choices=get_pretrained_model_names(),
+        help=(
+            "Opponent model for --eval_type metamon. Builds a minimal one-agent pool "
+            "from this name and --team_set (printed at startup). Omit when using "
+            "--opponent_config."
+        ),
+    )
+    parser.add_argument(
+        "--opponent_config",
+        default=None,
+        help=(
+            "YAML opponent pool for --eval_type metamon (ladder self-play format, "
+            "multiple agents). Mutually exclusive with --opponent_agent."
+        ),
+    )
+    parser.add_argument(
+        "--opponent_checkpoint",
+        type=int,
+        default=None,
+        help="Checkpoint epoch for --opponent_agent (defaults to model default).",
+    )
+    parser.add_argument(
+        "--num_parallel",
+        type=int,
+        default=8,
+        help="Number of parallel Showdown battle lanes for --eval_type metamon.",
+    )
+    parser.add_argument(
+        "--n_workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of Node processes hosting Showdown sims for --eval_type metamon "
+            "(lanes are split across workers; opponent/eval NN batching stays at "
+            "--num_parallel)."
+        ),
+    )
+    parser.add_argument(
+        "--opponent_sample",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sample opponent actions stochastically (default: True). Pass --no-opponent-sample for argmax.",
+    )
+    parser.add_argument(
+        "--agent_sample",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sample the evaluated agent's actions stochastically (default: True). Pass --no-agent_sample for deterministic argmax selection.",
+    )
+    parser.add_argument(
+        "--eval_player_side",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help=(
+            "Which Showdown side the evaluated agent plays for --eval_type metamon "
+            "(0=p1, 1=p2). Diagnostic for disentangling role- vs side-based win-rate "
+            "asymmetries."
+        ),
+    )
+    parser.add_argument(
+        "--opponent_gpu_idx",
+        type=int,
+        default=None,
+        help="CUDA device index for the in-the-loop opponent NN (--eval_type metamon).",
     )
     parser.add_argument(
         "--log_to_wandb",
