@@ -1,0 +1,10 @@
+# Experiment 1 (gen3_regi_plan.md SS6, revised): gen1ou 50/50 human replays +
+# pac-base self-play. Same mix for both A/B arms.
+#
+# No rating filters: smogtours replays are Unrated and MetamonDataset treats
+# Unrated as elo 1000, so rating filters would silently drop tournament games.
+formats:
+  - gen1ou
+replay_weight: 0.5
+self_play:
+  pac-base: 0.5
