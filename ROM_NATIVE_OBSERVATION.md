@@ -242,6 +242,21 @@ Total RAM:        ~15 KB
 
 This fits comfortably within GBA constraints (4MB ROM, 256KB EWRAM, 96KB IWRAM).
 
+
+## Training Integration (2026-08-20, branch ec/plastic-space-gen1)
+
+The schema is now wired into the main training loop (`metamon/rl/train.py`) for
+Experiment 1 of the gen3 program (docs/gen3_regi_plan.md §6a):
+
+- `metamon/interface.py::RomNativeObservationSpace` — registered `ObservationSpace`
+  producing these tensors from `UniversalState` (pass-through under
+  `TokenizedObservationSpace`; no tokenizer).
+- `metamon/rl/metamon_to_amago.py::MetamonRomNativeTstepEncoder` — grouped_v2-lineage
+  perceiver tstep encoder consuming the schema.
+- `metamon/rl/configs/models/plastic_rom_native_15m.gin` — ~15M Tauros config.
+
+**No changes to the tensor layout were made** — the C encoder stays in sync.
+
 ## Files
 
 | File | Description |

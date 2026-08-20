@@ -231,6 +231,69 @@ The tauros recipe leans on self-play (`online_selfplay.yaml`: 40% pac-tauros /
 
 ---
 
+## 6a. Experiment 1 RESULTS (revised design, 2026-08-20, branch ec/plastic-space-gen1)
+
+**Revision:** instead of a gen1-scoped *tokenizer* space, Arm B went straight to the
+text-less ROM-native observation space (`rom_native_obs` schema, 13 Pokemon slots x
+(9 cat + 31 num + 4 mask), 9-action legal mask) — the actual deployment target
+representation.
+
+**Setup (both arms identical except obs space + tstep encoder):**
+- ~15M grouped_v2-lineage Tauros, plain `MultiTaskAgent`, `MinimalActionSpace` (9),
+  `AggressiveShapedReward`, train gin `plastic_tauros_15m_control.gin`
+  (= `alakazam3_isfilter.gin`: IS-advantage-filtered offline BC/RL, lr 1.25e-4,
+  warmup 2k, critic_loss_weight 13.5, reward_multiplier 10).
+- Data: `gen1ou_plastic_replay_pacbase.yaml` — 50% parsed replays gen1ou (175,570)
+  + 50% pac-base self-play (4,984,663). No rating filters (smogtours = Unrated gotcha).
+- Budget: 150 epochs x 1,000 steps = 150k grad steps, batch 12, max_seq_len 128.
+- Control: `MetamonGroupedTstepEncoderV2` + text `GroupedObservationSpace`
+  (14,527,404 params; tstep 1,075,602).
+- Treatment: new `MetamonRomNativeTstepEncoder` (perceiver per slot over ID
+  embeddings, 13 slots + global + fusion) + `RomNativeObservationSpace`
+  (14,499,612 params; tstep 1,047,810).
+- wandb: group `plastic-space-exp1` (`exp1-romnative-15m-gen1ou` /
+  `exp1-textgrouped-15m-gen1ou`), entity costacosta-personal-research/metamon.
+- Checkpoints: /home/eddie/metamon/models/plastic_space_exp1/ (eval registry:
+  `Exp1RomNative15M`, `Exp1TextControl15M` in pretrained.py).
+
+**Results (final checkpoints, epoch 145+):**
+
+| Metric | ROM-native (B) | Text (A) |
+|---|---|---|
+| Training eval, late window (ep >= 112, ~296 battles/opp) | **0.826** | 0.805 |
+| 250-battle heuristic eval (6 baselines) | 0.856 | 0.869 |
+| ... excluding RandomBaseline | 0.824 | 0.842 |
+| Head-to-head A vs B (200 battles) | 46.0% wins | 54.0% |
+
+Per-opponent (250-battle eval): EmeraldKaizo 0.759/0.800, Gen1BossAI 0.914/0.943,
+Grunt 0.787/0.787, GymLeader 0.875/0.884, PokeEnvHeuristic 0.778/0.816,
+RandomBaseline 1.00/1.00 (B/A).
+
+**Verdict: GREEN LIGHT.** The text-less ROM-native space trains from scratch with
+no instability (actor loss 35 -> 2.0, monotone critic convergence) and is
+statistically indistinguishable from the text space at 15M / 150k steps: every
+measure within ~2 points, h2h 95% CI [39%, 53%] includes 50%. Meets the plan's
+success criterion (within ~2-3 points of the text-space control) with margin.
+
+Caveats:
+- Comparison is vs. our re-run non-belief control on replay+pac-base; the
+  historical belief control (`grouped_belief_control_150k`, pac-tauros only,
+  belief head active) ended at a similar level (final-epoch evals ~0.6-1.0
+  across opponents) — consistent.
+- The ROM-native space carries *richer* revealed-opponent bench info (13 slots
+  incl. revealed-opp moves/stats) than the grouped text space (revealed species
+  only as misc text) — the A/B compares *schemas*, not just tokenization.
+- No schema changes were needed; `ROM_NATIVE_OBSERVATION.md` tensor layout
+  untouched (C-encoder sync preserved).
+- Repo bugs fixed along the way: `pretrained.py` `_migrate_legacy_perceiver_ff_keys`
+  missing @staticmethod (crashed all local checkpoint loads); `--steps_per_epoch`
+  CLI arg added to `rl/train.py`.
+- The stale `plastic_tauros_15m_belief_control.gin` on ec/regi binds
+  lapras-branch params (`use_dynamic_damping`, `use_ema`, ...) that do not exist
+  here; do not reuse it on this branch.
+
+---
+
 ## 7. Phases & complexity
 
 | # | Phase | Estimate | Notes |
