@@ -271,3 +271,36 @@ Experiment 1 of the gen3 program (docs/gen3_regi_plan.md §6a):
 | `metamon/rom_native_obs/tests/test_encoder.py` | Encoder tests (15 tests) |
 | `poke-plastic-ox/include/rom_native_obs.h` | C struct definitions |
 | `poke-plastic-ox/src/rom_native_obs/rom_native_obs.c` | C encoder implementation |
+
+## Gen3 Schema v2 (ROM side)
+
+> Status: ROM-side encoder upgraded on branch `ec/rom-native-gen3` of
+> poke-plastic-ox; schema.py/metamon-side mapping updates are a separate
+> workstream. Full ROM-side details:
+> `poke-plastic-ox/plastic_ox/agent/GEN3_ROM_STATE.md`.
+
+Delta vs the Gen1 schema (append-only; everything below that existed in v1 is
+byte-identical in v2):
+
+- **Per-Pokémon categoricals 9 -> 11**: append `item` (u16) and `ability` (u8)
+  after the existing 9 (species, type_1, type_2, status, effect, move_1..4_id).
+  Item IDs use the expansion `ITEM_*` enum values (canonical item ID space; note
+  the expansion enum differs from Showdown item numbers — the load-bearing
+  mapping artifact is `poke-plastic-ox/plastic_ox/agent/gen3_items_expansion_enum.json`,
+  96 gen3 held items). Ability IDs use the expansion Ability enum (u8, gen3
+  range 1..76).
+- **Masks 4 -> 6**: append `item_revealed`, `ability_revealed`. The debug
+  omniscient encoder sets both for every valid slot; a production visibility
+  tracker would set them at the reveal hooks documented in GEN3_ROM_STATE.md
+  (`gLastUsedItem` setters, `RecordAbilityBattle`, ability popups).
+- **Side-condition enum += `SPIKES = 8`** (7 stays `unknown`). The single-enum
+  side condition stays lossy: only the highest-priority active condition per
+  side is reported; the ROM encoder checks spikes last (screens/safeguard/mist/
+  tailwind/aurora-veil win), and spike layers 1-3 collapse to one value.
+- **Widths**: species u16, move ids u16, item u16, ability u8 (unchanged: 13
+  slots, 9-action legal mask, 31 per-mon numerical, 6 global cat + 3 global num).
+
+ROM-side sources of truth for item/ability values: `gBattleMons[n].item` /
+`.ability` for active battlers; `GetMonData(MON_DATA_HELD_ITEM)` /
+`GetMonAbility()` for party (bench) slots. Spikes presence comes from
+`gBattleStruct->hazardsQueue[side]` (HAZARDS_SPIKES), not `gSideStatuses`.

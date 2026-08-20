@@ -1,0 +1,90 @@
+# Gen 3 ROM-native ("schema v2") observation space variant of the 15M grouped_v2
+# Tauros architecture (gen3_regi_plan.md; port of plastic_rom_native_15m.gin to gen3).
+#
+# Identical to smaller_multitaskagent_grouped_v2_arch.gin except the tstep encoder:
+# MetamonGroupedTstepEncoderV2 (text tokens, 7 entities) is replaced by
+# MetamonRomNativeGen3TstepEncoder (fixed-width integer IDs, 13 slots). The pokemon
+# encoder gets one extra layer (n_layers_pokemon 3 -> 4) and the fusion encoder
+# one extra layer (n_layers_fusion 3 -> 4) so the tstep encoder param count
+# approximately matches the control despite the much smaller embedding tables
+# (~1.05M vs 1.08M).
+#
+# Use with --obs_space RomNativeGen3ObservationSpace --action_space MinimalActionSpace.
+# The tokenizer CLI arg is loaded but unused (empty `tokenizable` dict makes
+# TokenizedObservationSpace a pass-through).
+
+import amago.nets.actor_critic
+import amago.nets.traj_encoders
+import amago.nets.transformer
+import amago.agent
+import amago.experiment
+
+MetamonAMAGOExperiment.agent_type = @agent.MultiTaskAgent
+MetamonAMAGOExperiment.tstep_encoder_type = @MetamonRomNativeGen3TstepEncoder
+MetamonAMAGOExperiment.traj_encoder_type = @traj_encoders.TformerTrajEncoder
+MetamonAMAGOExperiment.max_seq_len = 128
+
+# actor
+MultiTaskAgent.actor_type = @MetamonMaskedResidualActor
+MultiTaskAgent.pass_obs_keys_to_actor = ["illegal_actions"]
+MetamonMaskedResidualActor.activation = "leaky_relu"
+MetamonMaskedResidualActor.feature_dim = 300
+MetamonMaskedResidualActor.residual_ff_dim = 400
+MetamonMaskedResidualActor.residual_blocks = 2
+
+# critic
+MultiTaskAgent.critic_type = @actor_critic.NCriticsTwoHot
+actor_critic.NCriticsTwoHot.activation = "leaky_relu"
+actor_critic.NCriticsTwoHot.n_layers = 2
+actor_critic.NCriticsTwoHot.d_hidden = 512
+MultiTaskAgent.popart = True
+MultiTaskAgent.num_critics = 4
+actor_critic.NCriticsTwoHot.output_bins = 64
+actor_critic.NCriticsTwoHot.min_return = -100
+actor_critic.NCriticsTwoHot.max_return = 2100
+actor_critic.NCriticsTwoHot.use_symlog = False
+
+
+# MetamonRomNativeGen3TstepEncoder: Pokemon encoder (shared for 13 slots)
+MetamonRomNativeGen3TstepEncoder.d_pokemon = 64
+MetamonRomNativeGen3TstepEncoder.n_heads_pokemon = 4
+MetamonRomNativeGen3TstepEncoder.n_layers_pokemon = 4
+MetamonRomNativeGen3TstepEncoder.latent_tokens_pokemon = 4
+MetamonRomNativeGen3TstepEncoder.numerical_tokens_pokemon = 4
+MetamonRomNativeGen3TstepEncoder.pokemon_out_norm = "layer"
+
+# MetamonRomNativeGen3TstepEncoder: Global encoder (misc/aggregate features)
+MetamonRomNativeGen3TstepEncoder.d_global = 48
+MetamonRomNativeGen3TstepEncoder.n_heads_global = 4
+MetamonRomNativeGen3TstepEncoder.n_layers_global = 1
+MetamonRomNativeGen3TstepEncoder.latent_tokens_global = 3
+MetamonRomNativeGen3TstepEncoder.numerical_tokens_global = 2
+MetamonRomNativeGen3TstepEncoder.global_out_norm = "layer"
+
+# MetamonRomNativeGen3TstepEncoder: Fusion encoder (combines 14 entity embeddings)
+MetamonRomNativeGen3TstepEncoder.d_fusion = 84
+MetamonRomNativeGen3TstepEncoder.n_heads_fusion = 4
+MetamonRomNativeGen3TstepEncoder.n_layers_fusion = 4
+MetamonRomNativeGen3TstepEncoder.latent_tokens_fusion = 5
+MetamonRomNativeGen3TstepEncoder.fusion_out_norm = "layer"
+
+# MetamonRomNativeGen3TstepEncoder: General
+MetamonRomNativeGen3TstepEncoder.extra_emb_dim = 18
+MetamonRomNativeGen3TstepEncoder.dropout = 0.05
+MetamonRomNativeGen3TstepEncoder.use_flex_attention = False
+MetamonRomNativeGen3TstepEncoder.normformer_norms = True
+MetamonRomNativeGen3TstepEncoder.ff_mult = 3
+MetamonRomNativeGen3TstepEncoder.pokemon_role_emb = True
+
+
+traj_encoders.TformerTrajEncoder.n_layers = 3
+traj_encoders.TformerTrajEncoder.n_heads = 8
+traj_encoders.TformerTrajEncoder.d_ff = 1600
+traj_encoders.TformerTrajEncoder.d_model = 400
+traj_encoders.TformerTrajEncoder.normformer_norms = True
+traj_encoders.TformerTrajEncoder.sigma_reparam = True
+traj_encoders.TformerTrajEncoder.norm = "layer"
+traj_encoders.TformerTrajEncoder.head_scaling = True
+traj_encoders.TformerTrajEncoder.activation = "leaky_relu"
+traj_encoders.TformerTrajEncoder.attention_type = @transformer.FlashAttention
+transformer.FlashAttention.window_size = (32, 0)

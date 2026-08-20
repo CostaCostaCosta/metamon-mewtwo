@@ -324,3 +324,58 @@ Critical path: 0 → 2 → 3 (data/self-play) in parallel with 1 → 4 (obs spac
    ordering, forced-switch edge cases, omniscient C encoder) is a train/deploy skew
    class that gets *worse* in gen3 (abilities, items, more volatiles). Extend the
    comparison tests before translating data, not after.
+
+
+---
+
+## 6b. Gen 3 ROM-native schema v2 + data prep (DONE, 2026-08-20, branch ec/plastic-space-gen3)
+
+Exp 1 green-lit the ROM-native space; this phase built the gen3 version end-to-end
+and smoke-tested training.
+
+**Schema v2 contract** (Python `rom_native_obs/schema_gen3.py` + C
+`poke-plastic-ox` branch `ec/rom-native-gen3` `include/rom_native_obs.h` — kept in
+sync, append-only vs gen1):
+- Per-Pokemon categoricals 9 -> 11 (append `item`, `ability`); masks 4 -> 6
+  (append `item_revealed`, `ability_revealed`); side-cond enum += `spikes`=8
+  (single-enum stays lossy — documented).
+- Canonical IDs: species = National Dex 1-386 (this expansion has **no gen3 gap**),
+  moves = Showdown num 1-354, abilities = expansion enum 1-76, items = expansion
+  `ITEM_*` enum (gen3-legal set, 96). **Lone ID divergence: lightningrod =
+  expansion 31, Showdown 32** — ROM enum is canonical.
+- 13 slots / 9 actions / 31 numerical / 6+3 globals unchanged.
+
+**Built (metamon):** `rom_native_obs/gen3_static/` (species/moves/abilities/items
+json + `build_gen3_tables.py`), `mappings_gen3.py`, `schema_gen3.py`,
+`metamon_encoder_gen3.py` (`Gen3RomObservationEncoder`, opponent item/ability
+reveal memory), `interface.py::RomNativeGen3ObservationSpace`,
+`metamon_to_amago.py::MetamonRomNativeGen3TstepEncoder` (tstep 1,140,878 params),
+model gin `plastic_rom_native_gen3_15m.gin`, tests `test_encoder_gen3.py` (15) —
+full suite 30/30 green (gen1 Exp1 untouched).
+
+**Data (see docs/gen3_prep_data.md):** parsed-replays **v6** gen3ou 498,928 (+
+uu/nu/ubers), gen3ou self-play pac-base 1,015,752 + pac-exploratory 1,004,121,
+teams (competitive/paper_variety/modern_replays_v2 gen3*), four-way hardlink split
+(`split_gen3_replays.py`: smogtours 89,216 / gte1500 33,760 / lt1500 230,578 /
+unrated 145,374 — **gte1500 tripled vs v4**), dataset yamls
+`gen3ou_rom_replay_pacbase.yaml` + `gen3ou_rom_split_mix.yaml`.
+
+**Smoke test (PASS):** 15M gen3 model trained 2+1 epochs x 20 steps on the 50/50
+mix; **total params 14,592,572**; per-epoch checkpoints + resume-from-epoch all
+work. Bug fixed: a **stale gen1-only `parsed-replays/index.csv` cache made the
+nested v6 gen3ou dir index 0 files** — deleted; fresh recursive walk + cache now
+correct (498,928). Real training eval vs gen3 heuristics needs the local Showdown
+server running (eval envs) — not exercised here.
+
+**Launch (PoC):**
+```
+uv run python metamon/rl/train.py --run_name gen3-romnative-15m-poc \
+  --obs_space RomNativeGen3ObservationSpace --action_space MinimalActionSpace \
+  --reward_function AggressiveShapedReward \
+  --model_gin_config plastic_rom_native_gen3_15m.gin \
+  --train_gin_config alakazam3_isfilter.gin \
+  --dataset_config gen3ou_rom_replay_pacbase.yaml \
+  --save_dir /home/eddie/metamon/models/gen3_poc \
+  --epochs 150 --steps_per_epoch 1000 --batch_size_per_gpu 12 \
+  --ckpt_interval 5 --eval_gens 3 --log
+```

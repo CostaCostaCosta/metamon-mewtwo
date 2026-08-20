@@ -1,0 +1,30 @@
+# Gen 3 OU quality-split offline mix for the ROM-distillation program
+# (gen3_regi_plan.md SS2). Replay data comes from the hardlink split dirs
+# (metamon/data/split_gen3_replays.py), NOT the raw gen3ou dir:
+#   gen3ou_smogtours/        tournament play, highest quality (Unrated -> split by filename)
+#   gen3ou_ladder_gte1500/   rated ladder >= 1500 (thin, ~11K files -> upweighted)
+#   gen3ou_ladder_lt1500/    rated ladder < 1500 (volume filler)
+#   gen3ou_ladder_unrated/   ladder without rating (weakest signal)
+# Weight philosophy (mirrors online_selfplay.yaml: quality ~40-50%, volume filler
+# the rest):
+#   quality pool (smogtours + ladder_gte1500) = 0.40 of the mix;
+#   volume filler (ladder_lt1500 + ladder_unrated + pac-base self-play) = 0.60.
+# smogtours is weighted below ladder_gte1500 despite being highest quality because
+# it is Unrated tournament play (format/style drift vs. ladder), but still the
+# strongest signal per-file. ladder_gte1500 at 0.18 over only ~11K files makes it
+# the highest per-file sampling weight -- deliberate, since high-elo IL is the
+# scarce resource (plan SS8 risk #1).
+formats:
+  - gen3ou
+replay_weight: 0.0
+custom_replays:
+  - dir: /home/eddie/metamon_cache/parsed-replays/gen3ou_smogtours
+    weight: 0.22
+  - dir: /home/eddie/metamon_cache/parsed-replays/gen3ou_ladder_gte1500
+    weight: 0.18
+  - dir: /home/eddie/metamon_cache/parsed-replays/gen3ou_ladder_lt1500
+    weight: 0.10
+  - dir: /home/eddie/metamon_cache/parsed-replays/gen3ou_ladder_unrated
+    weight: 0.05
+self_play:
+  pac-base: 0.45
