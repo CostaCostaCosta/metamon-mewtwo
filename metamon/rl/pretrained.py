@@ -281,6 +281,7 @@ class PretrainedModel:
             return normalized
         return ckpt_state
 
+    @staticmethod
     def _migrate_legacy_perceiver_ff_keys(ckpt_state: dict, model_state: dict) -> dict:
         """Remap pre-``metamon-dev sync`` perceiver feed-forward keys.
 
@@ -1971,69 +1972,3 @@ class TaurosEnsemble(KakunaEnsemble):
 
 
 import metamon.rl.experimental.ensemble.register  # noqa: F401 — nickname ensemble agents
-
-
-PLASTIC_EXP1_SAVE_DIR = os.path.expanduser("~/metamon/models/plastic_space_exp1")
-
-
-@pretrained_model()
-class Exp1RomNative15M(LocalPretrainedModel):
-    """Experiment 1 (gen3_regi_plan.md SS6, revised) treatment arm:
-    15M grouped_v2-lineage Tauros model trained from scratch on gen1ou
-    (50/50 parsed replays + pac-base self-play) with the text-less ROM-native
-    ("plastic") observation space. See ROM_NATIVE_OBSERVATION.md.
-    """
-
-    def __init__(self):
-        super().__init__(
-            amago_ckpt_dir=PLASTIC_EXP1_SAVE_DIR,
-            model_name="exp1-romnative-15m-gen1ou",
-            model_gin_config="plastic_rom_native_15m.gin",
-            train_gin_config="plastic_tauros_15m_control.gin",
-            default_checkpoint=145,
-            action_space=get_action_space("MinimalActionSpace"),
-            observation_space=get_observation_space("RomNativeObservationSpace"),
-            reward_function=get_reward_function("AggressiveShapedReward"),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),  # unused (no tokenizable keys)
-            battle_backend="metamon",
-            dataset_config="gen1ou_plastic_replay_pacbase.yaml",
-        )
-
-    def get_path_to_checkpoint(self, checkpoint: int) -> str:
-        if checkpoint == LATEST_CHECKPOINT:
-            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
-        return super().get_path_to_checkpoint(checkpoint)
-
-
-@pretrained_model()
-class Exp1TextControl15M(LocalPretrainedModel):
-    """Experiment 1 (gen3_regi_plan.md SS6, revised) control arm:
-    identical 15M grouped_v2 Tauros recipe, data, and budget as
-    ``Exp1RomNative15M``, but with the standard text-token
-    ``GroupedObservationSpace``. A/B isolates the observation-space effect.
-    """
-
-    def __init__(self):
-        super().__init__(
-            amago_ckpt_dir=PLASTIC_EXP1_SAVE_DIR,
-            model_name="exp1-textgrouped-15m-gen1ou",
-            model_gin_config="smaller_multitaskagent_grouped_v2_arch.gin",
-            train_gin_config="plastic_tauros_15m_control.gin",
-            default_checkpoint=145,
-            action_space=get_action_space("MinimalActionSpace"),
-            observation_space=get_observation_space("GroupedObservationSpace"),
-            reward_function=get_reward_function("AggressiveShapedReward"),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
-            battle_backend="metamon",
-            dataset_config="gen1ou_plastic_replay_pacbase.yaml",
-            gin_overrides={
-                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
-                    "DefaultObservationSpace-v1"
-                ),
-            },
-        )
-
-    def get_path_to_checkpoint(self, checkpoint: int) -> str:
-        if checkpoint == LATEST_CHECKPOINT:
-            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
-        return super().get_path_to_checkpoint(checkpoint)
