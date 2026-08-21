@@ -103,3 +103,13 @@ From-scratch 15M ROM-native gen3 model (schema v2 + v6.1 spikes layers), online 
 - Cron stack: watchdog (4m) + FIFO checkin (30m) + epoch-50 eval trigger (10m).
 - PSRO-Lite confirmed adapting: weights shifted onto the stronger SRV2 t12/t16
   deployments as the policy improved past the weak ones.
+
+## 250-battle eval @ epoch 20 (task 1 measurement; 2026-08-21 ~09:15)
+`eval_gen3_250.py --model Gen3RomOnlineV0 --checkpoint 20 --battles 250 --seed 0`
+(competitive gen3ou, fixed seed). Win rates:
+- RandomBaseline 0.714 | Gen1BossAI 0.188 | PokeEnvHeuristic 0.071
+- Grunt 0.041 | GymLeader 0.038 | EmeraldKaizo 0.000
+- **vs SyntheticRLV2 (ckpt48): 0.012**
+From-scratch at epoch 20 (~20k grad steps): beats Random reliably, mid-tier
+heuristics still ahead. SyntheticRLV2 (200M) is the fixed reference; WR tracks the
+validator panel. Composite heuristic score (excl. Random): ~0.084.
