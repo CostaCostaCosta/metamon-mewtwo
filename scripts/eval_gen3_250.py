@@ -80,6 +80,8 @@ def main() -> int:
                    help="Parallel actors per heuristic baseline")
     p.add_argument("--srv2_parallel", type=int, default=8)
     p.add_argument("--output", default=None, help="Where to write the JSON summary")
+    p.add_argument("--log_wandb", action="store_true",
+                   help="Log per-opponent win rates to wandb (group gen3-eval250).")
     args = p.parse_args()
 
     model = get_pretrained_model(args.model)
@@ -134,6 +136,26 @@ def main() -> int:
             seed=args.seed,
         )
         summary["vs_SyntheticRLV2"] = _win_rates(sres) or sres
+
+    if args.log_wandb:
+        import wandb
+        run = wandb.init(
+            project=os.environ.get("METAMON_WANDB_PROJECT", "metamon"),
+            entity=os.environ.get("METAMON_WANDB_ENTITY"),
+            group="gen3-eval250",
+            name=f"eval250_{args.model}_ckpt{args.checkpoint}_seed{args.seed}",
+            config={"model": args.model, "checkpoint": args.checkpoint,
+                    "team_set": args.team_set, "battles": args.battles, "seed": args.seed},
+            reinit=True,
+        )
+        flat = {}
+        for opp, wr in (summary.get("heuristics") or {}).items():
+            flat[f"eval250/heuristic/{opp}"] = wr
+        for opp, wr in (summary.get("vs_SyntheticRLV2") or {}).items():
+            flat[f"eval250/SyntheticRLV2/{opp}"] = wr
+        wandb.log(flat)
+        run.finish()
+        print(f"[eval] logged {len(flat)} metrics to wandb group gen3-eval250")
 
     out = args.output or os.path.join(
         os.path.expanduser("~/metamon_runs"),
