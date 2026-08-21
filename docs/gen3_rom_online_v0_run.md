@@ -51,9 +51,9 @@ From-scratch 15M ROM-native gen3 model (schema v2 + v6.1 spikes layers), online 
 ## Known risks / TODO
 - Collector initial crash was a startup race (launched before first latest/policy.pt);
   resolved by resume. Watch for recurrence if learner restarts and deletes latest/.
-- No auto-restart watchdog (a buggy liveness check killed healthy roles; removed).
-  The 30-min heartbeat + FIFO cron provide monitoring; restart roles manually via
-  `~/metamon_runs/monitor_gen3/start_{learner,collector,validator}.sh` if one dies.
+- ~~No auto-restart watchdog~~ FIXED: a crash-safe watchdog (process-liveness
+  based, verified non-destructive) now restarts dead roles via cron every 4 min.
+  Manual restart fallback: `~/metamon_runs/monitor_gen3/start_{learner,collector,validator}.sh`.
 - fp32 limits throughput; consider bf16 in a future run (breaks current resume).
 - Eval-vs-heuristics path (`pretrained_vs_baselines`) has no per-battle seed plumb;
   reproducibility via fixed 250-battle count + competitive set + agent seeding.
