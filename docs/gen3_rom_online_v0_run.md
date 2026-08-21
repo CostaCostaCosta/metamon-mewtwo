@@ -63,3 +63,20 @@ From-scratch 15M ROM-native gen3 model (schema v2 + v6.1 spikes layers), online 
 - logs: ~/metamon_runs/gen3_rom_online_v0_{learner,collector,validator}.log
 - monitor: ~/metamon_runs/monitor_gen3/ (monitor_gen3_fifo.py, start_*.sh, state.json)
 - eval: uv run python scripts/eval_gen3_250.py --model Gen3RomOnlineV0 --checkpoint N
+
+## Throughput note (measured 2026-08-21 ~08:30)
+- ~2:25 / epoch (1000 grad steps) at fp32, batch 24, GPU-bound (GPU 91-100%).
+- CPU governor `performance` set via pkexec -> collection ~19.6k battles/hr, buffer
+  crosses the 5k online-mix threshold quickly.
+- Projected: ~24 epochs/hr -> ~190 epochs (~190k grad steps) over 8h wall clock.
+  bf16 (~1.3x) rejected mid-run: changes dynamics + breaks optimizer/PopArt resume
+  for ~15M params. Keep stable fp32; revisit for a future fresh run.
+
+## Validation milestones (2026-08-21)
+- End-to-end smoke test PASSED before launch (collection + train step + val envs).
+- Run resumed clean; all 3 roles healthy, no errors/NaN/OOM.
+- Buffer crossed 5,000 (online-mix threshold) at ~epoch 9; online weight ramps
+  0 -> 0.40 over 20 anneal epochs (initial_sampling_weights=[0, offline]).
+- Validator logging val WR vs SyntheticRLV2 (competitive); near-0 early as expected
+  for a from-scratch policy vs the 200M reference; monitor reads this key.
+- PSRO sidecar (buffer/gen3ou/meta_weights.json) written each epoch by collector.
