@@ -379,3 +379,13 @@ uv run python metamon/rl/train.py --run_name gen3-romnative-15m-poc \
   --epochs 150 --steps_per_epoch 1000 --batch_size_per_gpu 12 \
   --ckpt_interval 5 --eval_gens 3 --log
 ```
+
+
+**First PoC run (2026-08-20, COMPLETE):** `gen3-romnative-15m-poc` ran 150 epochs
+x 1000 steps (149,701 grad steps) on the 50/50 mix with `--eval_gens 3 --log`.
+wandb: https://wandb.ai/costacosta-personal-research/metamon/runs/8ytut3aq
+Training healthy (Actor Loss 30.6->2.6). Heuristic eval win rates logged per epoch
+(`val/Average Win Rate in gen3ou_vs_*`) but noisy/low (final ~0.25-0.70) — the
+expected gen3 data-quality gap (SS8 risk #4), not a pipeline bug. Next levers:
+quality-split mix (gen3ou_rom_split_mix.yaml), more steps, online self-play gen.
+Checkpoints: /home/eddie/metamon/models/gen3_poc/gen3-romnative-15m-poc/.
