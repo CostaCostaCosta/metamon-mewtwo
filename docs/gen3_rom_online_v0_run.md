@@ -113,3 +113,11 @@ From-scratch 15M ROM-native gen3 model (schema v2 + v6.1 spikes layers), online 
 From-scratch at epoch 20 (~20k grad steps): beats Random reliably, mid-tier
 heuristics still ahead. SyntheticRLV2 (200M) is the fixed reference; WR tracks the
 validator panel. Composite heuristic score (excl. Random): ~0.084.
+
+## Periodic eval sweep (2026-08-21 ~09:16)
+- Replaced the single eval_at_50 cron with `monitor_gen3/eval_sweep.sh` (every 15m):
+  runs the 250-battle harness (heuristics + SyntheticRLV2, competitive, seed 0) at
+  epochs 50 / 150 / 300 / 500 / 750 / 1000, each once (sentinel
+  ~/metamon_runs/eval250_ckpt{N}_seed0.json), never concurrently. Captures the
+  task-1 measurement across the whole training arc (the learning curve), not just
+  one point. epoch-20 already done (see above).
