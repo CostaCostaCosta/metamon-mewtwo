@@ -91,3 +91,15 @@ From-scratch 15M ROM-native gen3 model (schema v2 + v6.1 spikes layers), online 
 - Cron: FIFO checkin every 30m; eval_at_50.sh every 10m fires the full 250-battle
   eval (heuristics + SyntheticRLV2, competitive, seed 0) once policy_epoch_50.pt
   exists -> ~/metamon_runs/eval250_ckpt50_seed0.json.
+
+## Safe watchdog (2026-08-21 ~09:00)
+- Replaced the removed buggy watchdog with a crash-safe one
+  (~/metamon_runs/monitor_gen3/watchdog.sh, cron every 4 min). Liveness = a live
+  python/uv/node process in the role's pane process tree (walk descendants of the
+  pane PID). It NEVER kills a running role (verified: reports all 3 ALIVE). Only
+  restarts a role whose process is gone, or recreates a missing window/session.
+  start_{learner,collector,validator}.sh relaunch each role with
+  --resume_training_state (no progress lost).
+- Cron stack: watchdog (4m) + FIFO checkin (30m) + epoch-50 eval trigger (10m).
+- PSRO-Lite confirmed adapting: weights shifted onto the stronger SRV2 t12/t16
+  deployments as the policy improved past the weak ones.
