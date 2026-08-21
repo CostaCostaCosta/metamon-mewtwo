@@ -132,3 +132,13 @@ validator panel. Composite heuristic score (excl. Random): ~0.084.
   new pool; confirmed collecting vs Kakuna on mrv2_smogtours_hilo.
 - Buffer at restart ~36k trajectories (dset_max_size 50000); PSRO-Lite sidecar
   reweights over the new 6-row pool.
+
+## Heuristic evals -> wandb (2026-08-21 ~10:45, user: "why arent heuristics in wandb")
+- Root cause: the run only logged the SRV2 val panel (validator --val_opponent
+  SyntheticRLV2). The 250-battle harness (eval_gen3_250.py) defaulted
+  log_to_wandb=False, so the 6-heuristic results went only to JSON, not wandb.
+- Fix: added --log_wandb to eval_gen3_250.py (logs eval250/heuristic/<opp> +
+  eval250/SyntheticRLV2/<opp> to wandb group "gen3-eval250"); eval_sweep.sh now
+  passes it; fixed the sweep cron PATH (uv was not on cron's PATH -> epoch-50 eval
+  initially failed with 'uv: command not found'); backfilled epoch-20 + epoch-50.
+- Results now visible in wandb under group gen3-eval250.
