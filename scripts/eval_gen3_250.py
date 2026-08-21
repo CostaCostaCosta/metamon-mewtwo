@@ -49,6 +49,21 @@ HEURISTICS = [
 ]
 
 
+def _win_rates(res):
+    """Pull `{opponent: win_rate}` out of an evaluate_test results dict."""
+    out = {}
+    if not isinstance(res, dict):
+        return out
+    for k, v in res.items():
+        if isinstance(k, str) and k.startswith("Average Win Rate in "):
+            opp = k.split("_vs_", 1)[-1]
+            try:
+                out[opp] = round(float(v), 4)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="250-battle gen3 eval harness")
     p.add_argument("--model", required=True, help="Registered model name")
@@ -100,7 +115,7 @@ def main() -> int:
             parallel_actors_per_baseline=args.heuristic_actors,
             baselines=HEURISTICS,
         )
-        summary["heuristics"] = hres
+        summary["heuristics"] = _win_rates(hres) or hres
 
     # --- SyntheticRLV2 reference ---
     if not args.skip_srv2:
@@ -118,7 +133,7 @@ def main() -> int:
             opponent_checkpoint=args.srv2_checkpoint,
             seed=args.seed,
         )
-        summary["vs_SyntheticRLV2"] = sres
+        summary["vs_SyntheticRLV2"] = _win_rates(sres) or sres
 
     out = args.output or os.path.join(
         os.path.expanduser("~/metamon_runs"),
