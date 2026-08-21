@@ -80,3 +80,14 @@ From-scratch 15M ROM-native gen3 model (schema v2 + v6.1 spikes layers), online 
 - Validator logging val WR vs SyntheticRLV2 (competitive); near-0 early as expected
   for a from-scratch policy vs the 200M reference; monitor reads this key.
 - PSRO sidecar (buffer/gen3ou/meta_weights.json) written each epoch by collector.
+
+## Monitor fixes + auto-eval (2026-08-21 ~08:55)
+- Fixed monitor_gen3_fifo.py: WANDB_LOGS now points at wandb_logs/wandb and
+  latest_val_wr() unwraps find_run_files' {mode:(run_dir,wandb_file)} tuples,
+  preferring the validator run. Now reads val WR correctly (0.0087 @ epoch 10).
+- eval_gen3_250.py now emits a clean {opponent: win_rate} summary.
+- Epoch-10 baseline (25-battle smoke): Random 1.0, Gen1BossAI 1.0, GymLeader 0.40,
+  Grunt 0.17, PokeEnvHeuristic/EmeraldKaizo 0.0.
+- Cron: FIFO checkin every 30m; eval_at_50.sh every 10m fires the full 250-battle
+  eval (heuristics + SyntheticRLV2, competitive, seed 0) once policy_epoch_50.pt
+  exists -> ~/metamon_runs/eval250_ckpt50_seed0.json.
