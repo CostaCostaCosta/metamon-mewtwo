@@ -121,3 +121,14 @@ validator panel. Composite heuristic score (excl. Random): ~0.084.
   ~/metamon_runs/eval250_ckpt{N}_seed0.json), never concurrently. Captures the
   task-1 measurement across the whole training arc (the learning curve), not just
   one point. epoch-20 already done (see above).
+
+## Opponent pool change (2026-08-21 ~10:40, user request)
+- Pool is now: latest policy (self) x2 + **SyntheticRLV2 x1** (ckpt48, temp 1.0)
+  + **Kakuna x3** (ckpt34, temps 0.8/1.2/1.6) + 4 PSRO FIFO slots.
+  (Was: SRV2 x3 at varying temps; user asked for 1 SRV2 + 3 Kakuna instead.)
+- Kakuna = gen3-capable 143M policy (~63% GXE vs humans on competitive gen3ou),
+  battle_backend=metamon, reward matches the run. Verified loads (ckpt 34).
+- Collector restarted via monitor_gen3/start_collector.sh (resume) to pick up the
+  new pool; confirmed collecting vs Kakuna on mrv2_smogtours_hilo.
+- Buffer at restart ~36k trajectories (dset_max_size 50000); PSRO-Lite sidecar
+  reweights over the new 6-row pool.
