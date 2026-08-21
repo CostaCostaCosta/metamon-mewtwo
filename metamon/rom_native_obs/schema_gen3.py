@@ -44,7 +44,6 @@ from .schema import (  # noqa: F401
     POKEMON_MOVE_CAT_FEATURES, POKEMON_MOVE_CAT_LEN,
     POKEMON_MOVE_TYPE_FEATURES, POKEMON_MOVE_TYPE_LEN,
     GLOBAL_CAT_FEATURES, GLOBAL_CAT_LEN,
-    GLOBAL_NUM_FEATURES, GLOBAL_NUM_LEN,
     SLOT_PLAYER_ACTIVE, SLOT_SWITCH_0, SLOT_SWITCH_1, SLOT_SWITCH_2,
     SLOT_SWITCH_3, SLOT_SWITCH_4, SLOT_OPPONENT_ACTIVE,
     SLOT_REVEALED_OPP_0, SLOT_REVEALED_OPP_1, SLOT_REVEALED_OPP_2,
@@ -74,6 +73,20 @@ SIDE_COND_AURORA_VEIL = 6
 SIDE_COND_UNKNOWN = 7
 SIDE_COND_SPIKES = 8
 SIDE_COND_MAX_GEN3 = 8
+
+# ---- Gen 3 global numerical features (5 = gen1 3 + 2 spikes-layer counts) ----
+# APPEND-ONLY relative to gen1 (turn_norm, opponents_remaining, forced_switch
+# stay first). v6.1 parsed data populates UniversalState.player/opponent_spikes_layers
+# (0-3); the ROM schema finally surfaces them (the single side-cond enum is lossy).
+SPIKES_LAYER_MAX = 3.0
+GLOBAL_NUM_FEATURES = [
+    "turn_norm",            # turn / 200.0 (clipped to 1.0)
+    "opponents_remaining",  # / 6.0
+    "forced_switch",        # 0.0 or 1.0
+    "player_spikes_layers",   # appended (gen3): 0-3 / 3.0
+    "opponent_spikes_layers", # appended (gen3): 0-3 / 3.0
+]
+GLOBAL_NUM_LEN = len(GLOBAL_NUM_FEATURES)  # 5
 
 # ---- Gen 3 per-Pokemon categorical features (11 = gen1 9 + item + ability) ----
 POKEMON_CAT_FEATURES = [
@@ -158,6 +171,8 @@ class Gen3RomBattleState:
             self.global_features.turn_norm,
             self.global_features.opponents_remaining,
             self.global_features.forced_switch,
+            self.global_features.player_spikes_layers,
+            self.global_features.opponent_spikes_layers,
         ], dtype=np.float32)
 
         pokemon_cat = np.zeros((NUM_POKEMON_SLOTS, POKEMON_CAT_LEN), dtype=np.int32)

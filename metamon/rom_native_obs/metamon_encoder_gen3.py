@@ -31,7 +31,7 @@ from .schema_gen3 import (
     SPECIES_UNKNOWN, MOVE_UNKNOWN, MOVE_NONE,
     TYPE_NONE, STATUS_NONE, STATUS_FAINT,
     WEATHER_NONE, SIDE_COND_NONE, FIELD_NONE, EFFECT_NONE,
-    CATEGORY_NONE, ITEM_NONE, ABILITY_NONE,
+    CATEGORY_NONE, ITEM_NONE, ABILITY_NONE, SPIKES_LAYER_MAX,
 )
 from .mappings import (
     TYPE_NAME_TO_ID, STATUS_NAME_TO_ID, WEATHER_NAME_TO_ID,
@@ -229,6 +229,9 @@ class Gen3RomObservationEncoder:
             turn_norm=min(self._turn_count / 200.0, 1.0),
             opponents_remaining=float(state.opponents_remaining) / 6.0,
             forced_switch=1.0 if state.forced_switch else 0.0,
+            # v6.1 parsed data populates these (0-3); clamp/normalize to [0,1].
+            player_spikes_layers=min(float(getattr(state, "player_spikes_layers", 0)) / SPIKES_LAYER_MAX, 1.0),
+            opponent_spikes_layers=min(float(getattr(state, "opponent_spikes_layers", 0)) / SPIKES_LAYER_MAX, 1.0),
         )
 
         pokemon_list = [Gen3PokemonFeatures() for _ in range(NUM_POKEMON_SLOTS)]

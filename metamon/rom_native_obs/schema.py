@@ -308,6 +308,11 @@ class GlobalFeatures:
     turn_norm: float = 0.0
     opponents_remaining: float = 1.0
     forced_switch: float = 0.0
+    # Gen 3 (schema v2) APPEND-ONLY additions. Default 0.0 so gen1 construction
+    # sites and the gen1 to_tensors() layout (which ignores these) are unchanged.
+    # Spikes layers on each side, 0-3 (normalized to [0,1] by /3 in the encoder).
+    player_spikes_layers: float = 0.0
+    opponent_spikes_layers: float = 0.0
 
 
 @dataclass

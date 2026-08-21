@@ -1,0 +1,55 @@
+# Gen 3 OU opponent pool for the gen3_rom_online_v0 online RL run.
+#
+# League design (goal task 2):
+#   * the run's own LATEST policy (self-play vs the rolling latest/policy.pt),
+#   * 3 deployments of pretrained SyntheticRLV2 at varying temperature
+#     (a strong, fixed external reference across the gens 1-4 / 9 spectrum),
+#   * 4 PSRO FIFO slots for THIS run's past checkpoints once they outperform
+#     SyntheticRLV2 (val WR vs SyntheticRLV2 >= 0.50). Slots start empty and are
+#     filled first-in-first-out by the monitor (~/metamon_runs/monitor_gen3/).
+#
+# All battles draw teams from mrv2_smogtours_hilo (the gen3 online team set) so
+# learner and opponents see matched team compositions.
+#
+# NOTE on weights: rows are uniform until PSRO-Lite (--psro_weighting) begins
+# writing the meta_weights.json sidecar at --psro_start_epoch; the sidecar then
+# reweights rows by the learner's empirical win rate per agent.
+defaults:
+  team_set: mrv2_smogtours_hilo
+  battle_backend: metamon
+  checkpoints: [null]
+  temperatures: [1.0]
+  num_agents: 1
+
+agents:
+  # --- latest policy (self-play peer) ---
+  Gen3RomOnlineV0:
+    model_name: Gen3RomOnlineV0
+    num_agents: 2            # self-play is the primary peer
+    checkpoints: [-1]        # LATEST_CHECKPOINT: learner's rolling latest/policy.pt
+    temperatures: [1.0]
+
+  # --- SyntheticRLV2 x3 at varying temperature (fixed external reference) ---
+  SyntheticRLV2_t08:
+    model_name: SyntheticRLV2
+    checkpoints: [48]        # default/best checkpoint
+    temperatures: [0.8]
+  SyntheticRLV2_t12:
+    model_name: SyntheticRLV2
+    checkpoints: [48]
+    temperatures: [1.2]
+  SyntheticRLV2_t16:
+    model_name: SyntheticRLV2
+    checkpoints: [48]
+    temperatures: [1.6]
+
+  # --- 4 PSRO FIFO slots (EMPTY at launch; filled by the monitor) ---
+  # When the current policy's val WR vs SyntheticRLV2 crosses 0.50 (and at later
+  # new highs), the monitor registers the run and inserts a row below, e.g.:
+  #   Gen3RomOnlineV0_e120:
+  #     model_name: Gen3RomOnlineV0
+  #     checkpoints: [120]
+  #     temperatures: [1.0]
+  # Cap 4 rows; when full, the OLDEST row is evicted (first-in, first-out).
+  # (Left commented so the pool loads with only the 5 live agents until the
+  # first trigger fires.)

@@ -382,8 +382,22 @@ class LocalPretrainedModel(PretrainedModel):
         super().__init__(*args, **kwargs)
         self.local_ckpt_dir = os.path.join(amago_ckpt_dir, self.model_name, "ckpts")
         if not os.path.exists(self.local_ckpt_dir):
-            raise FileNotFoundError(
-                f"Checkpoint directory {self.local_ckpt_dir} was not found. Check the amago_ckpt_dir and model_name arguments."
+            # Tolerate a missing ckpt dir for models that default to the rolling
+            # LATEST_CHECKPOINT (latest/policy.pt): an online self-play pool row
+            # (checkpoint=-1) must instantiate before the learner has written its
+            # first checkpoint. Construction is deferred-fail — the model only
+            # errors if a concrete epoch checkpoint is actually requested while
+            # the dir is still absent. Models pinned to a numbered default epoch
+            # keep the strict early failure (catches typos in amago_ckpt_dir).
+            if self.default_checkpoint != LATEST_CHECKPOINT:
+                raise FileNotFoundError(
+                    f"Checkpoint directory {self.local_ckpt_dir} was not found. Check the amago_ckpt_dir and model_name arguments."
+                )
+            warnings.warn(
+                f"Checkpoint directory {self.local_ckpt_dir} does not exist yet; "
+                f"'{self.model_name}' defaults to LATEST_CHECKPOINT (latest/policy.pt), "
+                "which must exist before any weights are loaded.",
+                RuntimeWarning,
             )
 
     def get_path_to_checkpoint(self, checkpoint: int) -> str:
@@ -2032,6 +2046,85 @@ class Exp1TextControl15M(LocalPretrainedModel):
                     "DefaultObservationSpace-v1"
                 ),
             },
+        )
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        if checkpoint == LATEST_CHECKPOINT:
+            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
+        return super().get_path_to_checkpoint(checkpoint)
+
+
+GEN3_POC_SAVE_DIR = os.path.expanduser("~/metamon/models/gen3_poc")
+
+
+@pretrained_model()
+class Gen3RomNative15M(LocalPretrainedModel):
+    """Gen 3 ROM-native ("schema v2") 15M grouped_v2-lineage architecture.
+
+    Architecture / obs-space / action-space / reward reference for the gen3
+    ROM-distillation program. The ``amago_ckpt_dir`` points at the completed
+    proof-of-concept run (``gen3-romnative-15m-poc``); supply ``checkpoint=N``
+    to load those PoC weights, or use this purely as the arch/config donor for
+    a fresh ``--from_scratch`` run (``--base_model Gen3RomNative15M
+    --from_scratch``).
+
+    NOTE (schema v2 + spikes layers): ``RomNativeGen3ObservationSpace`` now
+    emits a 5-wide ``global_num`` (gen1 3 + player/opponent spikes layers from
+    v6.1 parsed data). The PoC checkpoints were trained on the 3-wide layout
+    and are NOT weight-compatible with the widened ``global_num_fuse``; use
+    ``--from_scratch`` for new runs on v6.1 data rather than bootstrapping PoC
+    weights.
+    """
+
+    def __init__(self):
+        super().__init__(
+            amago_ckpt_dir=GEN3_POC_SAVE_DIR,
+            model_name="gen3-romnative-15m-poc",
+            model_gin_config="plastic_rom_native_gen3_15m.gin",
+            train_gin_config="alakazam3_isfilter.gin",
+            default_checkpoint=145,
+            action_space=get_action_space("MinimalActionSpace"),
+            observation_space=get_observation_space("RomNativeGen3ObservationSpace"),
+            reward_function=get_reward_function("AggressiveShapedReward"),
+            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),  # unused (no tokenizable keys)
+            battle_backend="metamon",
+            dataset_config="gen3ou_rom_replay_pacbase.yaml",
+        )
+
+    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+        if checkpoint == LATEST_CHECKPOINT:
+            return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
+        return super().get_path_to_checkpoint(checkpoint)
+
+
+GEN3_ROM_ONLINE_V0_SAVE_DIR = os.path.expanduser("~/metamon_runs/gen3_rom_online_v0")
+
+
+@pretrained_model()
+class Gen3RomOnlineV0(LocalFinetunedModel):
+    """Online RL run ``gen3_rom_online_v0`` (this run): gen3 ROM-native 15M,
+    trained from scratch on v6.1 parsed data + online self-play.
+
+    Registered so (a) ``online_rl.py --base_model Gen3RomOnlineV0`` supplies the
+    arch/obs/action/reward config for this run, and (b) the run's own past
+    checkpoints can serve as PSRO FIFO self-play opponents once they outperform
+    SyntheticRLV2. Checkpoints live under
+    ``{save_dir}/gen3_rom_online_v0/ckpts/policy_weights/policy_epoch_{N}.pt``;
+    ``checkpoint=-1`` (``LATEST_CHECKPOINT``) loads the learner's rolling
+    ``ckpts/latest/policy.pt``. NOTE: instantiating before the run's first
+    checkpoint exists raises (LocalPretrainedModel checks the ckpt dir) -- the
+    launcher passes ``--from_scratch`` so weights come from this run, and the
+    PSRO FIFO rows are only added by the monitor after checkpoints exist.
+    """
+
+    def __init__(self):
+        super().__init__(
+            base_model=Gen3RomNative15M,
+            amago_ckpt_dir=GEN3_ROM_ONLINE_V0_SAVE_DIR,
+            model_name="gen3_rom_online_v0",
+            default_checkpoint=LATEST_CHECKPOINT,
+            train_gin_config="alakazam3_isfilter.gin",
+            dataset_config="gen3ou_rom_split_mix.yaml",
         )
 
     def get_path_to_checkpoint(self, checkpoint: int) -> str:

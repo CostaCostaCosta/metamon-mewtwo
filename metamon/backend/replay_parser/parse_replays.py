@@ -145,6 +145,13 @@ class ReplayParser:
         checks.check_action_idxs(universal_states, actions, action_idxs, gen=replay.gen)
         return universal_states, action_idxs
 
+    @staticmethod
+    def _sanitize_username(username: str) -> str:
+        # player names occasionally contain path-hostile characters
+        # (e.g. "SweetPosho /", "icey tea >"); strip them so the output
+        # filename is always a valid single path component.
+        return "".join(c for c in username if c not in '/\\<>:"|?*').strip()
+
     def save_to_disk(
         self,
         replay: backward.POVReplay,
@@ -154,6 +161,8 @@ class ReplayParser:
     ):
         universal_states, action_idxs = self.povreplay_to_seq(replay)
         won = "WIN" if replay.winner else "LOSS"
+        player_username = self._sanitize_username(player_username)
+        opponenent_username = self._sanitize_username(opponenent_username)
         filename = f"{replay.gameid}_{replay.rating}_{player_username}_vs_{opponenent_username}_{time_played.strftime('%m-%d-%Y')}_{won}"
         if self.output_dir is not None:
             path = self.output_dir

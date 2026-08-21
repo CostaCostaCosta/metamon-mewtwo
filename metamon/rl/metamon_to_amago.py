@@ -485,6 +485,15 @@ def make_pokepy_env(*args, **kwargs):
     return VectorizedMetamonAMAGOWrapper(menv)
 
 
+# Backward-compat gin alias: legacy HF model configs (e.g. SyntheticRLV2's
+# ``synthetic_multitaskagent.gin``) bind ``@MetamonMultiTaskAgent`` / configure
+# ``MetamonMultiTaskAgent.*``, the former name of amago's ``MultiTaskAgent``.
+# Registering the subclass under the old name lets those gins load unchanged.
+@gin.configurable
+class MetamonMultiTaskAgent(amago.agent.MultiTaskAgent):
+    pass
+
+
 @gin.configurable
 class MetamonDiscrete(amago.nets.policy_dists.Discrete):
     """Discrete policy with temperature-based sampling.
@@ -1731,6 +1740,7 @@ class MetamonRomNativeTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         self.d_global = d_global
         self.numerical_tokens_pokemon = numerical_tokens_pokemon
         self.numerical_tokens_global = numerical_tokens_global
+        self.extra_emb_dim = extra_emb_dim
 
         # --- categorical embedding tables (shared across all 13 slots) ---
         # index 0 is "unknown/none" in every ID space.
@@ -2013,6 +2023,14 @@ class MetamonRomNativeGen3TstepEncoder(MetamonRomNativeTstepEncoder):
         self.pokemon_pos = LearnablePosEmb(max_len=pokemon_seq_len, d_model=d_pokemon)
         self.register_buffer(
             "_pokemon_pos_ids", torch.arange(pokemon_seq_len, dtype=torch.long)
+        )
+
+        # Rebuild global num fuse: gen3 GLOBAL_NUM_LEN is 5 (gen1 3 + 2 spikes-layer
+        # counts). The gen1 parent built this with gen1's width (3), so re-create it
+        # at the gen3 width or global_num (...,5) would mismatch the Linear input.
+        self.global_num_fuse = nn.Linear(
+            sg.GLOBAL_NUM_LEN + self.NUM_ACTIONS + self.extra_emb_dim,
+            self.numerical_tokens_global * d_global,
         )
 
     def _encode_pokemon(self, pcat, pmove_cat, pmove_type, pnum, pmask, log_dict=None):

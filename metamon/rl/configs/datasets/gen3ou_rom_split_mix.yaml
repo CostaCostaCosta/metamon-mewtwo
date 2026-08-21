@@ -1,30 +1,74 @@
 # Gen 3 OU quality-split offline mix for the ROM-distillation program
-# (gen3_regi_plan.md SS2). Replay data comes from the hardlink split dirs
-# (metamon/data/split_gen3_replays.py), NOT the raw gen3ou dir:
-#   gen3ou_smogtours/        tournament play, highest quality (Unrated -> split by filename)
-#   gen3ou_ladder_gte1500/   rated ladder >= 1500 (thin, ~11K files -> upweighted)
-#   gen3ou_ladder_lt1500/    rated ladder < 1500 (volume filler)
-#   gen3ou_ladder_unrated/   ladder without rating (weakest signal)
-# Weight philosophy (mirrors online_selfplay.yaml: quality ~40-50%, volume filler
-# the rest):
-#   quality pool (smogtours + ladder_gte1500) = 0.40 of the mix;
-#   volume filler (ladder_lt1500 + ladder_unrated + pac-base self-play) = 0.60.
-# smogtours is weighted below ladder_gte1500 despite being highest quality because
-# it is Unrated tournament play (format/style drift vs. ladder), but still the
-# strongest signal per-file. ladder_gte1500 at 0.18 over only ~11K files makes it
-# the highest per-file sampling weight -- deliberate, since high-elo IL is the
-# scarce resource (plan SS8 risk #1).
+# (gen3_regi_plan.md SS2) -- v6.1 edition.
+#
+# Replay data comes from the v6.1 hardlink split dirs
+# (metamon/data/split_gen3_replays.py run on parsed-replays-v6.1), NOT the raw
+# tier dirs. v6.1 reparses carry UniversalState.player/opponent_spikes_layers
+# (0-3) which the ROM-native gen3 schema now surfaces as 2 global_num features.
+#
+#   OU buckets (parsed-replays-v6.1):
+#     gen3ou_smogtours/        tournament play, highest quality (88,210)
+#     gen3ou_ladder_gte1500/   rated ladder >= 1500 (32,680) -- scarce expert IL
+#     gen3ou_ladder_lt1500/    rated ladder < 1500 (223,350) -- volume filler
+#     gen3ou_ladder_unrated/   unrated ladder (142,776) -- weakest signal
+#   Lower tiers (smogtours = best per-file; ladder low/unrated are thin):
+#     gen3ubers_smogtours 2,798 / gen3uu_smogtours 1,452 / gen3nu_smogtours 390
+#     gen3ubers_ladder_*  / gen3uu_ladder_*  / gen3nu_ladder_*  (no gte1500)
+#
+# Weight philosophy (REVISED for the online run):
+#   * Bias HARD toward human-expert play (smogtours + ladder>=1500). We have not
+#     verified the level of play in pac-exploratory, so exploratory self-play is
+#     dropped from the OFFLINE mix entirely (0.00). Fresh self-play enters via
+#     the ONLINE side of the mixture (latest policy + PSRO pool), so pac-* here
+#     would double-count unverified exploratory data.
+#   * Multi-tier: OU is the optimization target (~70% of mix) but the ROM
+#     includes UU/NU/Ubers, so those tiers get a real but small share (~8%) for
+#     tier-agnostic strength (the species/base-stat representation is shared).
+#   * Per-file upweighting of the scarcest expert data (ou gte1500, tier
+#     smogtours) is deliberate: high-elo IL is the scarce resource (plan SS8 #1).
+#
+# Shares (custom_replays normalized to 1.0):
+#   human-expert OU (smogtours .30 + gte1500 .26)      = 0.56
+#   lower-tier human (ubers/uu/nu smogtours+ladder)    = 0.08
+#   OU volume filler (lt1500 .22 + unrated .14)        = 0.36
+# All four gen3 tiers must be listed so MetamonDataset's filename format-check
+# (battle-id token must contain a listed format) admits the uu/nu/ubers split
+# dirs; each custom_replays dir only contains its own tier's files.
 formats:
   - gen3ou
+  - gen3ubers
+  - gen3uu
+  - gen3nu
 replay_weight: 0.0
 custom_replays:
-  - dir: /home/eddie/metamon_cache/parsed-replays/gen3ou_smogtours
+  # --- OU human-expert (0.56) ---
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3ou_smogtours
+    weight: 0.30
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3ou_ladder_gte1500
+    weight: 0.26
+  # --- OU volume filler (0.36) ---
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3ou_ladder_lt1500
     weight: 0.22
-  - dir: /home/eddie/metamon_cache/parsed-replays/gen3ou_ladder_gte1500
-    weight: 0.18
-  - dir: /home/eddie/metamon_cache/parsed-replays/gen3ou_ladder_lt1500
-    weight: 0.10
-  - dir: /home/eddie/metamon_cache/parsed-replays/gen3ou_ladder_unrated
-    weight: 0.05
-self_play:
-  pac-base: 0.45
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3ou_ladder_unrated
+    weight: 0.14
+  # --- lower tiers: multi-tier strength (0.08) ---
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3ubers_smogtours
+    weight: 0.030
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3ubers_ladder_unrated
+    weight: 0.010
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3ubers_ladder_lt1500
+    weight: 0.004
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3uu_smogtours
+    weight: 0.018
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3uu_ladder_unrated
+    weight: 0.008
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3uu_ladder_lt1500
+    weight: 0.004
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3nu_smogtours
+    weight: 0.012
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3nu_ladder_unrated
+    weight: 0.006
+  - dir: /home/eddie/metamon_cache/parsed-replays-v6.1/gen3nu_ladder_lt1500
+    weight: 0.004
+# No pac-base / pac-exploratory self_play: unverified level of play, and fresh
+# self-play already enters through the online mixture.

@@ -551,6 +551,10 @@ class UniversalState:
     # version-specific
     can_tera: bool  # added v3-beta
     opponent_teampreview: List[str]  # added v3
+    # Spikes layer counts (0-3) per side. Added in parsed-replays v6.1.
+    # Replays parsed before v6.1 and very old battles default to 0 (== unknown).
+    player_spikes_layers: int = 0
+    opponent_spikes_layers: int = 0
 
     @property
     def agent_format(self) -> str:
@@ -608,7 +612,22 @@ class UniversalState:
             battle_lost=state.battle_lost,
             can_tera=state.can_tera,
             opponent_teampreview=opponent_teampreview,
+            player_spikes_layers=cls._spikes_layers(state.player_conditions),
+            opponent_spikes_layers=cls._spikes_layers(state.opponent_conditions),
         )
+
+    @staticmethod
+    def _spikes_layers(conditions) -> int:
+        # In both ReplayState and poke-env Battle, the dict value for
+        # SideCondition.SPIKES is the layer count (1-3). Values for
+        # non-stackable conditions are unrelated (turn numbers), so read
+        # SPIKES explicitly and never generalize this to other conditions.
+        if not conditions:
+            return 0
+        for cond, val in conditions.items():
+            if cond == SideCondition.SPIKES:
+                return int(val) if isinstance(val, int) else 0
+        return 0
 
     @classmethod
     def from_Battle(cls, battle: Battle):
@@ -651,6 +670,8 @@ class UniversalState:
             opponents_remaining=opponents_remaining,
             can_tera=battle.can_tera is not None,
             opponent_teampreview=opponent_teampreview,
+            player_spikes_layers=cls._spikes_layers(battle.side_conditions),
+            opponent_spikes_layers=cls._spikes_layers(battle.opponent_side_conditions),
         )
     # fmt: on
 
@@ -682,6 +703,12 @@ class UniversalState:
             # backwards compat (if it's missing; it's an old version of the dataset
             # --> gen 1-4 --> no teampreview)
             data["opponent_teampreview"] = []
+
+        if "player_spikes_layers" not in data:
+            # backwards compat (pre-v6.1 parsed replays have no spikes layer counts;
+            # 0 == "unknown" for these older files)
+            data["player_spikes_layers"] = 0
+            data["opponent_spikes_layers"] = 0
 
         return cls(**data)
 
