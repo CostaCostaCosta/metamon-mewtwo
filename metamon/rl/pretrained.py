@@ -2131,3 +2131,78 @@ class Gen3RomOnlineV0(LocalFinetunedModel):
         if checkpoint == LATEST_CHECKPOINT:
             return os.path.join(self.local_ckpt_dir, "latest", "policy.pt")
         return super().get_path_to_checkpoint(checkpoint)
+
+
+# ---------------------------------------------------------------------------
+# Heuristic baseline opponents registered as PretrainedModel subclasses.
+#
+# These wrap the built-in heuristic baselines (RandomBaseline, Grunt,
+# GymLeader, Gen1BossAI) so they can be used as opponent-pool entries in
+# online RL training (``gen3ou_rom_online.yaml`` etc.).  They share the
+# learner's observation/action/reward spaces so the vectorized env can build
+# observations for the opponent side.  ``is_heuristic = True`` tells
+# ``ConfigBatchedOpponent._make_bundle`` to create a ``HeuristicBatchedOpponent``
+# (rule-based, no neural network) instead of an ``AmagoBatchedOpponent``.
+# ---------------------------------------------------------------------------
+
+class _HeuristicPretrainedModel(PretrainedModel):
+    """Base class for heuristic opponents registered as pretrained models.
+
+    Subclasses set ``_heuristic_name`` and inherit the learner's obs/action/reward
+    spaces from ``Gen3RomNative15M`` so the vectorized environment can build
+    opponent observations in the same format.
+    """
+
+    is_heuristic = True
+    _heuristic_name = "RandomBaseline"  # overridden by subclasses
+
+    def __init__(self):
+        base = Gen3RomNative15M()
+        super().__init__(
+            model_name=self.__class__.__name__,
+            model_gin_config=base.model_gin_config,
+            train_gin_config=base.train_gin_config,
+            default_checkpoint=0,
+            action_space=base.action_space,
+            observation_space=base.observation_space,
+            reward_function=base.reward_function,
+            tokenizer=base.tokenizer,
+            battle_backend="metamon",
+        )
+
+    def initialize_agent(self, *args, **kwargs):
+        raise NotImplementedError(
+            f"{self.__class__.__name__} is a heuristic opponent — "
+            "it has no neural network to initialize."
+        )
+
+
+@pretrained_model()
+class HeuristicRandomBaseline(_HeuristicPretrainedModel):
+    """Random-action heuristic registered for opponent-pool use."""
+    _heuristic_name = "RandomBaseline"
+
+
+@pretrained_model()
+class HeuristicGrunt(_HeuristicPretrainedModel):
+    """Grunt heuristic (random move, switch at low HP) for opponent-pool use."""
+    _heuristic_name = "Grunt"
+
+
+@pretrained_model()
+class HeuristicGymLeader(_HeuristicPretrainedModel):
+    """GymLeader heuristic (super-effective moves, switch at very low HP)."""
+    _heuristic_name = "GymLeader"
+
+
+@pretrained_model()
+class HeuristicGen1BossAI(_HeuristicPretrainedModel):
+    """Gen1BossAI heuristic (type-eff * BP, switch at very low HP)."""
+    _heuristic_name = "Gen1BossAI"
+
+
+@pretrained_model()
+class HeuristicEmeraldKaizo(_HeuristicPretrainedModel):
+    """EmeraldKaizo heuristic (KO-aware, type-eff * BP, aggressive switching)."""
+    _heuristic_name = "EmeraldKaizo"
+
