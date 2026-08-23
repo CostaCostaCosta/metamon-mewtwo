@@ -105,9 +105,7 @@ def split_format_dir(format_dir: str, dry_run: bool = False) -> dict:
     fmt = os.path.basename(os.path.normpath(format_dir))
     parent = os.path.dirname(os.path.normpath(format_dir))
 
-    split_dirs = {
-        b: os.path.join(parent, f"{fmt}_{b}", fmt) for b in BUCKETS
-    }
+    split_dirs = {b: os.path.join(parent, f"{fmt}_{b}", fmt) for b in BUCKETS}
     counts, total, errors = scan_format_dir(format_dir)
 
     if not dry_run:
@@ -130,7 +128,9 @@ def split_format_dir(format_dir: str, dry_run: bool = False) -> dict:
         counts["_total"] = total
         counts["_errors"] = errors
 
-    print(f"{fmt}: {total:,} files -> " + ", ".join(f"{b}={counts[b]:,}" for b in BUCKETS))
+    print(
+        f"{fmt}: {total:,} files -> " + ", ".join(f"{b}={counts[b]:,}" for b in BUCKETS)
+    )
     if errors:
         print(f"  {errors} unparseable files skipped")
     return counts
@@ -151,9 +151,13 @@ def main(argv=None) -> int:
             grand_linked += sum(c.get(b, 0) for b in BUCKETS)
 
     if not args.dry_run:
-        print(f"\nTOTAL source files: {grand_total:,}; hardlinks placed: {grand_linked:,}")
+        print(
+            f"\nTOTAL source files: {grand_total:,}; hardlinks placed: {grand_linked:,}"
+        )
         if grand_total != grand_linked:
-            print(f"WARNING: mismatch! linked {grand_linked:,} != source {grand_total:,}")
+            print(
+                f"WARNING: mismatch! linked {grand_linked:,} != source {grand_total:,}"
+            )
             return 1
         print("OK: every source file hardlinked into exactly one bucket.")
     return 0

@@ -31,7 +31,6 @@ from metamon.backend.replay_parser.str_parsing import move_name, pokemon_name
 from metamon.interface import UniversalState
 from metamon.tokenizer import PokemonTokenizer
 
-
 BELIEF_PREFIX = "belief_"
 BELIEF_SPECIES_KEY = f"{BELIEF_PREFIX}opp_species_set"
 BELIEF_SPECIES_MASK_KEY = f"{BELIEF_PREFIX}opp_species_mask"
@@ -77,7 +76,9 @@ def _species_token_ids(
     return species
 
 
-def _move_token_ids(states: list[UniversalState], tokenizer: PokemonTokenizer) -> set[int]:
+def _move_token_ids(
+    states: list[UniversalState], tokenizer: PokemonTokenizer
+) -> set[int]:
     moves: set[int] = set()
     for state in states:
         for move in state.opponent_active_pokemon.moves:
@@ -280,9 +281,7 @@ class Gen1OpponentTeamBeliefHead(nn.Module):
         top1_hit = target.gather(-1, top1).clamp(0.0, 1.0) * mask_f
         topk = min(6, logits.shape[-1])
         topk_idx = logits.topk(topk, dim=-1).indices
-        topk_hits = target.gather(-1, topk_idx).clamp(0.0, 1.0).sum(
-            -1, keepdim=True
-        )
+        topk_hits = target.gather(-1, topk_idx).clamp(0.0, 1.0).sum(-1, keepdim=True)
         recall_denom = (target.clamp(0.0, 1.0).sum(-1, keepdim=True) * mask_f).sum()
         metrics = {
             f"{metric_prefix} Loss": loss.detach(),
@@ -459,9 +458,7 @@ class MetamonBeliefMultiTaskAgent(MultiTaskAgent):
     def get_grad_norms(self) -> dict[str, float]:
         norms = super().get_grad_norms()
         if self.belief_head is not None:
-            norms["Belief Head Grad Norm"] = amago.utils.get_grad_norm(
-                self.belief_head
-            )
+            norms["Belief Head Grad Norm"] = amago.utils.get_grad_norm(self.belief_head)
         return norms
 
     def _belief_actor_state(

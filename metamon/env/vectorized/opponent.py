@@ -106,7 +106,6 @@ class AmagoBatchedOpponent(BatchedOpponent):
         self._driver.reset_all()
 
 
-
 def _build_type_chart() -> np.ndarray:
     """Standard 18-type effectiveness chart (Gen 3).
 
@@ -177,6 +176,7 @@ def _build_type_chart() -> np.ndarray:
     chart[17][1] = 0.5; chart[17][14] = 2.0; chart[17][15] = 2.0; chart[17][16] = 0.5
     # fmt: on
     return chart
+
 
 class HeuristicBatchedOpponent(BatchedOpponent):
     """Rule-based batched opponent that decodes ROM-native observation dicts.
@@ -257,7 +257,9 @@ class HeuristicBatchedOpponent(BatchedOpponent):
         return np.array([nums[15], nums[19], nums[23], nums[27]], dtype=np.float32)
 
     @classmethod
-    def _type_effectiveness(cls, atk_type: int, def_type1: int, def_type2: int) -> float:
+    def _type_effectiveness(
+        cls, atk_type: int, def_type1: int, def_type2: int
+    ) -> float:
         """Product of type-chart multipliers for ``atk_type`` vs both defender types."""
         if atk_type <= 0 or atk_type >= len(cls._TYPE_CHART):
             return 1.0
@@ -405,6 +407,7 @@ class HeuristicBatchedOpponent(BatchedOpponent):
             else:
                 out[i] = 0  # placeholder for inactive lanes (env ignores)
         return out
+
 
 class ConfigBatchedOpponent(BatchedOpponent):
     """One opponent shared by all lanes; resample from config on env reset() only."""

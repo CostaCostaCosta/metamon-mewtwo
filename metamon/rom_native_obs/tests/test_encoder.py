@@ -9,6 +9,7 @@ Tests cover:
 5. Multi-timestep state tracking (revealed opponents)
 6. Legal action mask correctness
 """
+
 import json
 import lz4.frame
 import os
@@ -20,9 +21,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from metamon.rom_native_obs import RomObservationEncoder, RomBattleState
 from metamon.rom_native_obs.schema import (
-    NUM_POKEMON_SLOTS, NUM_MOVES_PER_POKEMON, NUM_ACTIONS,
-    SLOT_PLAYER_ACTIVE, SLOT_OPPONENT_ACTIVE, SLOT_SWITCH_0, SLOT_SWITCH_1, SLOT_REVEALED_OPP_0,
-    SPECIES_UNKNOWN, MOVE_UNKNOWN, STATUS_FAINT,
+    NUM_POKEMON_SLOTS,
+    NUM_MOVES_PER_POKEMON,
+    NUM_ACTIONS,
+    SLOT_PLAYER_ACTIVE,
+    SLOT_OPPONENT_ACTIVE,
+    SLOT_SWITCH_0,
+    SLOT_SWITCH_1,
+    SLOT_REVEALED_OPP_0,
+    SPECIES_UNKNOWN,
+    MOVE_UNKNOWN,
+    STATUS_FAINT,
 )
 from metamon.interface import UniversalState, UniversalPokemon, UniversalMove
 from metamon.backend.replay_parser.str_parsing import pokemon_name
@@ -32,19 +41,58 @@ def _make_simple_pokemon(name="gengar", hp=1.0, status="nostatus", moves=None):
     """Create a minimal UniversalPokemon for testing."""
     if moves is None:
         moves = [
-            UniversalMove(name="thunderbolt", move_type="electric", category="special",
-                         base_power=95, accuracy=1.0, priority=0, current_pp=24, max_pp=24),
-            UniversalMove(name="psychic", move_type="psychic", category="special",
-                         base_power=90, accuracy=1.0, priority=0, current_pp=16, max_pp=16),
+            UniversalMove(
+                name="thunderbolt",
+                move_type="electric",
+                category="special",
+                base_power=95,
+                accuracy=1.0,
+                priority=0,
+                current_pp=24,
+                max_pp=24,
+            ),
+            UniversalMove(
+                name="psychic",
+                move_type="psychic",
+                category="special",
+                base_power=90,
+                accuracy=1.0,
+                priority=0,
+                current_pp=16,
+                max_pp=16,
+            ),
         ]
     return UniversalPokemon(
-        name=name, hp_pct=hp, types="ghost poison", item="noitem", ability="noability",
-        lvl=100, status=status, effect="noeffect", moves=moves,
-        atk_boost=0, spa_boost=0, def_boost=0, spd_boost=0, spe_boost=0,
-        accuracy_boost=0, evasion_boost=0,
-        base_atk=65, base_spa=130, base_def=60, base_spd=130, base_spe=110, base_hp=60,
-        hp_stat=-1, atk_stat=-1, def_stat=-1, spa_stat=-1, spd_stat=-1, spe_stat=-1,
-        tera_type="notype", base_species=name,
+        name=name,
+        hp_pct=hp,
+        types="ghost poison",
+        item="noitem",
+        ability="noability",
+        lvl=100,
+        status=status,
+        effect="noeffect",
+        moves=moves,
+        atk_boost=0,
+        spa_boost=0,
+        def_boost=0,
+        spd_boost=0,
+        spe_boost=0,
+        accuracy_boost=0,
+        evasion_boost=0,
+        base_atk=65,
+        base_spa=130,
+        base_def=60,
+        base_spd=130,
+        base_spe=110,
+        base_hp=60,
+        hp_stat=-1,
+        atk_stat=-1,
+        def_stat=-1,
+        spa_stat=-1,
+        spd_stat=-1,
+        spe_stat=-1,
+        tera_type="notype",
+        base_species=name,
     )
 
 
@@ -124,14 +172,14 @@ class TestMetamonEncoder(unittest.TestCase):
         p = rom_state.pokemon[SLOT_PLAYER_ACTIVE]
         self.assertTrue(p.valid)
         self.assertEqual(p.species, 94)  # Gengar
-        self.assertEqual(p.type_1, 9)    # Ghost
-        self.assertEqual(p.type_2, 4)    # Poison
-        self.assertEqual(p.status, 0)    # No status
+        self.assertEqual(p.type_1, 9)  # Ghost
+        self.assertEqual(p.type_2, 4)  # Poison
+        self.assertEqual(p.status, 0)  # No status
         self.assertAlmostEqual(p.hp_fraction, 1.0)
 
         # Should have 2 moves encoded (sorted alphabetically: psychic < thunderbolt)
-        self.assertEqual(p.move_ids[0], 94)   # psychic = 94
-        self.assertEqual(p.move_ids[1], 85)   # thunderbolt = 85
+        self.assertEqual(p.move_ids[0], 94)  # psychic = 94
+        self.assertEqual(p.move_ids[1], 85)  # thunderbolt = 85
 
     def test_opponent_moves_hidden(self):
         """Opponent moves should not leak when not revealed."""
@@ -176,11 +224,11 @@ class TestMetamonEncoder(unittest.TestCase):
         mask = rom_state.legal_action_mask
         self.assertTrue(mask[0])  # move 0
         self.assertTrue(mask[1])  # move 1
-        self.assertFalse(mask[2]) # move 2 (padding)
-        self.assertFalse(mask[3]) # move 3 (padding)
+        self.assertFalse(mask[2])  # move 2 (padding)
+        self.assertFalse(mask[3])  # move 3 (padding)
         self.assertTrue(mask[4])  # switch 0
         self.assertTrue(mask[5])  # switch 1
-        self.assertFalse(mask[6]) # switch 2 (padding)
+        self.assertFalse(mask[6])  # switch 2 (padding)
         self.assertFalse(mask[7])
         self.assertFalse(mask[8])
 
@@ -229,8 +277,10 @@ class TestMetamonEncoder(unittest.TestCase):
         rom1 = encoder.encode(state1)
 
         # Only Alakazam should be revealed
-        revealed_slots = rom1.pokemon[SLOT_REVEALED_OPP_0:SLOT_REVEALED_OPP_0+6]
-        valid_revealed = [p for p in revealed_slots if p.valid and p.species != 65]  # exclude active
+        revealed_slots = rom1.pokemon[SLOT_REVEALED_OPP_0 : SLOT_REVEALED_OPP_0 + 6]
+        valid_revealed = [
+            p for p in revealed_slots if p.valid and p.species != 65
+        ]  # exclude active
         self.assertEqual(len(valid_revealed), 0)  # No additional revealed yet
 
         # Turn 2: opponent switches to Exeggutor
@@ -240,15 +290,21 @@ class TestMetamonEncoder(unittest.TestCase):
         rom2 = encoder.encode(state2)
 
         # Now Alakazam should be in revealed slots
-        revealed_slots = rom2.pokemon[SLOT_REVEALED_OPP_0:SLOT_REVEALED_OPP_0+6]
+        revealed_slots = rom2.pokemon[SLOT_REVEALED_OPP_0 : SLOT_REVEALED_OPP_0 + 6]
         revealed_species = [p.species for p in revealed_slots if p.valid]
         self.assertIn(65, revealed_species)  # Alakazam should be revealed
 
     def test_status_encoding(self):
         """Test that status conditions are correctly encoded."""
         for status_name, expected_id in [
-            ("nostatus", 0), ("slp", 1), ("psn", 2), ("brn", 3),
-            ("frz", 4), ("par", 5), ("tox", 6), ("fnt", 7),
+            ("nostatus", 0),
+            ("slp", 1),
+            ("psn", 2),
+            ("brn", 3),
+            ("frz", 4),
+            ("par", 5),
+            ("tox", 6),
+            ("fnt", 7),
         ]:
             encoder = RomObservationEncoder(gen=1)
             encoder.reset()
@@ -256,8 +312,9 @@ class TestMetamonEncoder(unittest.TestCase):
             state.player_active_pokemon.status = status_name
             rom_state = encoder.encode(state)
             self.assertEqual(
-                rom_state.pokemon[SLOT_PLAYER_ACTIVE].status, expected_id,
-                f"Status '{status_name}' should map to {expected_id}"
+                rom_state.pokemon[SLOT_PLAYER_ACTIVE].status,
+                expected_id,
+                f"Status '{status_name}' should map to {expected_id}",
             )
 
     def test_hp_fraction(self):
@@ -300,36 +357,37 @@ class TestMetamonEncoder(unittest.TestCase):
     def test_real_trajectory(self):
         """Test encoding from a real replay file."""
         sample_file = os.path.expanduser(
-            '~/metamon/trajectories/metamon_1400/gen1ou/gen1ou-2220252351_1410_chansey96380_vs_mirrorcoat22581_10-10-2024_WIN.json.lz4'
+            "~/metamon/trajectories/metamon_1400/gen1ou/gen1ou-2220252351_1410_chansey96380_vs_mirrorcoat22581_10-10-2024_WIN.json.lz4"
         )
         if not os.path.exists(sample_file):
             self.skipTest("Sample trajectory file not found")
 
-        with lz4.frame.open(sample_file, 'rb') as f:
-            data = json.loads(f.read().decode('utf-8'))
+        with lz4.frame.open(sample_file, "rb") as f:
+            data = json.loads(f.read().decode("utf-8"))
 
         encoder = RomObservationEncoder(gen=1)
         encoder.reset()
 
-        for i, state_dict in enumerate(data['states'][:10]):
+        for i, state_dict in enumerate(data["states"][:10]):
             state = UniversalState.from_dict(state_dict)
             rom_state = encoder.encode(state)
             tensors = rom_state.to_tensors()
 
             # Verify shapes are consistent
-            self.assertEqual(tensors['pokemon_cat'].shape, (13, 9))
-            self.assertEqual(tensors['pokemon_num'].shape, (13, 31))
+            self.assertEqual(tensors["pokemon_cat"].shape, (13, 9))
+            self.assertEqual(tensors["pokemon_num"].shape, (13, 31))
 
             # Player active should always be valid
             self.assertTrue(rom_state.pokemon[SLOT_PLAYER_ACTIVE].valid)
 
         # After 10 turns, some opponents should be revealed
         revealed_count = sum(
-            1 for p in rom_state.pokemon[SLOT_REVEALED_OPP_0:SLOT_REVEALED_OPP_0+6]
+            1
+            for p in rom_state.pokemon[SLOT_REVEALED_OPP_0 : SLOT_REVEALED_OPP_0 + 6]
             if p.valid
         )
         self.assertGreaterEqual(revealed_count, 0)  # at least no crashes
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -1983,8 +1983,6 @@ class MetamonRomNativeTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
         return emb.flatten(1)
 
 
-
-
 @gin.configurable
 class MetamonRomNativeGen3TstepEncoder(MetamonRomNativeTstepEncoder):
     """Gen 3 ROM-native ("schema v2") timestep encoder.
@@ -1997,7 +1995,7 @@ class MetamonRomNativeGen3TstepEncoder(MetamonRomNativeTstepEncoder):
     """
 
     POKEMON_MASK_LEN = 6  # gen3: + item_revealed, ability_revealed
-    N_CAT_TOKENS = 19     # gen1 17 + item + ability
+    N_CAT_TOKENS = 19  # gen1 17 + item + ability
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2052,7 +2050,9 @@ class MetamonRomNativeGen3TstepEncoder(MetamonRomNativeTstepEncoder):
         )
         num_in = torch.cat([pnum.float(), pmask.float()], dim=-1)  # (B, 13, 37)
         num_tokens = F.leaky_relu(self.pokemon_num_fuse(num_in))
-        num_tokens = num_tokens.unflatten(-1, (self.numerical_tokens_pokemon, self.d_pokemon))
+        num_tokens = num_tokens.unflatten(
+            -1, (self.numerical_tokens_pokemon, self.d_pokemon)
+        )
         seq = torch.cat([cat_tokens, num_tokens], dim=2)
         seq = seq + self.pokemon_pos(self._pokemon_pos_ids)
         seq = seq.flatten(1, 2)
@@ -2061,17 +2061,24 @@ class MetamonRomNativeGen3TstepEncoder(MetamonRomNativeTstepEncoder):
             role = self._pokemon_role_emb(self._pokemon_role_ids)
             tokens_per_pokemon = seq.shape[1] // self.NUM_POKEMON
             idx = torch.arange(self.NUM_POKEMON, device=seq.device) * tokens_per_pokemon
-            role_signal = torch.zeros(seq.shape[1], seq.shape[2], device=seq.device, dtype=seq.dtype)
+            role_signal = torch.zeros(
+                seq.shape[1], seq.shape[2], device=seq.device, dtype=seq.dtype
+            )
             role_signal[idx] = role
             seq = seq + role_signal
 
         emb = self.pokemon_perceiver(seq, flatten=False)
-        add_activation_log("MetamonRomNativeGen3TstepEncoder/pokemon_perceiver", emb, log_dict)
+        add_activation_log(
+            "MetamonRomNativeGen3TstepEncoder/pokemon_perceiver", emb, log_dict
+        )
         emb = self.pokemon_out_norm(emb)
         emb = emb.flatten(2)
         emb = self.pokemon_proj(emb)
-        add_activation_log("MetamonRomNativeGen3TstepEncoder/pokemon_proj", emb, log_dict)
+        add_activation_log(
+            "MetamonRomNativeGen3TstepEncoder/pokemon_proj", emb, log_dict
+        )
         return emb
+
 
 class MetamonAMAGODataset(RLDataset):
     """A wrapper around the ParsedReplayDataset that converts to an AMAGO RLDataset.

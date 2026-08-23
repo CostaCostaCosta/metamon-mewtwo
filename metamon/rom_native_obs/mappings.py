@@ -8,6 +8,7 @@ tables from Metamon's string-based names to the canonical integer IDs.
 All mappings are deterministic and generated from the Showdown data files
 where possible, with hand-maintained entries for status, weather, etc.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,8 +16,12 @@ import os
 import re
 from typing import Dict, Optional
 
-from metamon.backend.replay_parser.str_parsing import pokemon_name, move_name, clean_name, clean_no_numbers
-
+from metamon.backend.replay_parser.str_parsing import (
+    pokemon_name,
+    move_name,
+    clean_name,
+    clean_no_numbers,
+)
 
 # ============================================================================
 # Type name -> canonical type ID (matches pokeemerald-expansion Type enum)
@@ -224,8 +229,10 @@ CATEGORY_NAME_TO_ID: Dict[str, int] = {
 # ============================================================================
 
 # Build from the Showdown Gen1 pokedex
-_STATIC_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                            "backend", "showdown_dex", "static")
+_STATIC_ROOT = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "backend", "showdown_dex", "static"
+)
+
 
 def _build_species_map() -> Dict[str, int]:
     """Build species name -> National Dex ID mapping from Showdown data."""
@@ -245,6 +252,7 @@ def _build_species_map() -> Dict[str, int]:
                 mapping[pokemon_name(val["baseSpecies"])] = num
     return mapping
 
+
 SPECIES_NAME_TO_ID = _build_species_map()
 
 
@@ -260,6 +268,7 @@ def species_name_to_id(name: str) -> int:
 # Move name -> Showdown move number
 # ============================================================================
 
+
 def _build_move_map() -> Dict[str, int]:
     """Build move name -> move number mapping from Showdown data."""
     with open(os.path.join(_STATIC_ROOT, "moves", "gen1moves.json")) as f:
@@ -274,6 +283,7 @@ def _build_move_map() -> Dict[str, int]:
             # Also map the key
             mapping[move_name(key)] = num
     return mapping
+
 
 MOVE_NAME_TO_ID = _build_move_map()
 

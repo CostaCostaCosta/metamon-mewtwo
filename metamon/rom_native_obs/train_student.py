@@ -11,6 +11,7 @@ Supports:
 - Multiple model sizes (4M, 2M, 1M, 500k)
 - Evaluation metrics (top-1 agreement, KL, cross entropy)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,12 +30,22 @@ from torch.utils.data import Dataset, DataLoader
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from metamon.rom_native_obs.schema import (
-    NUM_POKEMON_SLOTS, NUM_ACTIONS,
-    POKEMON_CAT_LEN, POKEMON_NUM_LEN, POKEMON_MASK_LEN,
-    POKEMON_MOVE_CAT_LEN, POKEMON_MOVE_TYPE_LEN,
-    GLOBAL_CAT_LEN, GLOBAL_NUM_LEN,
+    NUM_POKEMON_SLOTS,
+    NUM_ACTIONS,
+    POKEMON_CAT_LEN,
+    POKEMON_NUM_LEN,
+    POKEMON_MASK_LEN,
+    POKEMON_MOVE_CAT_LEN,
+    POKEMON_MOVE_TYPE_LEN,
+    GLOBAL_CAT_LEN,
+    GLOBAL_NUM_LEN,
 )
-from metamon.rom_native_obs.student_model import RomStudentPolicy, RomStudentGRUPolicy, preset_config, StudentConfig
+from metamon.rom_native_obs.student_model import (
+    RomStudentPolicy,
+    RomStudentGRUPolicy,
+    preset_config,
+    StudentConfig,
+)
 
 
 class RomObsDataset(Dataset):
@@ -86,16 +97,28 @@ class RomObsDataset(Dataset):
             "pokemon_mask": torch.from_numpy(d["pokemon_mask"][t]).long(),
             "legal_action_mask": torch.from_numpy(d["legal_action_mask"][t]).float(),
             "action": torch.tensor(action, dtype=torch.long),
-            "teacher_logits": torch.from_numpy(d["teacher_logits"][t]).float() if "teacher_logits" in d else None,
+            "teacher_logits": (
+                torch.from_numpy(d["teacher_logits"][t]).float()
+                if "teacher_logits" in d
+                else None
+            ),
         }
 
 
 def collate_fn(batch):
     """Collate function that handles None teacher_logits."""
     result = {}
-    for key in ["global_cat", "global_num", "pokemon_cat", "pokemon_move_cat",
-                "pokemon_move_type", "pokemon_num", "pokemon_mask",
-                "legal_action_mask", "action"]:
+    for key in [
+        "global_cat",
+        "global_num",
+        "pokemon_cat",
+        "pokemon_move_cat",
+        "pokemon_move_type",
+        "pokemon_num",
+        "pokemon_mask",
+        "legal_action_mask",
+        "action",
+    ]:
         result[key] = torch.stack([b[key] for b in batch])
 
     teacher_logits = [b["teacher_logits"] for b in batch]
@@ -106,8 +129,15 @@ def collate_fn(batch):
     return result
 
 
-def train_epoch(model, dataloader, optimizer, device, 
-                lambda_kd=1.0, lambda_bc=0.5, max_grad_norm=1.0):
+def train_epoch(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    lambda_kd=1.0,
+    lambda_bc=0.5,
+    max_grad_norm=1.0,
+):
     """Train for one epoch."""
     model.train()
     total_loss = 0.0
@@ -119,14 +149,16 @@ def train_epoch(model, dataloader, optimizer, device,
 
     for batch in dataloader:
         # Move to device
-        inputs = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+        inputs = {
+            k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)
+        }
 
         # Forward pass
         logits = model(inputs)
 
         # Apply legal action mask for BC loss only
         legal_mask = inputs["legal_action_mask"].bool()
-        logits_masked = logits.masked_fill(~legal_mask, float('-inf'))
+        logits_masked = logits.masked_fill(~legal_mask, float("-inf"))
 
         loss = torch.tensor(0.0, device=device)
 
@@ -143,7 +175,12 @@ def train_epoch(model, dataloader, optimizer, device,
             student_log_probs = F.log_softmax(logits, dim=-1)
 
             # Forward KL: KL(teacher || student) = sum(teacher * (log_teacher - log_student))
-            kd_loss = F.kl_div(student_log_probs, teacher_log_probs, reduction='batchmean', log_target=True)
+            kd_loss = F.kl_div(
+                student_log_probs,
+                teacher_log_probs,
+                reduction="batchmean",
+                log_target=True,
+            )
             if torch.isfinite(kd_loss):
                 loss = loss + lambda_kd * kd_loss
                 total_kd_loss += kd_loss.item()
@@ -196,10 +233,12 @@ def evaluate(model, dataloader, device):
 
     with torch.no_grad():
         for batch in dataloader:
-            inputs = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+            inputs = {
+                k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)
+            }
             logits = model(inputs)
             legal_mask = inputs["legal_action_mask"].bool()
-            logits_masked = logits.masked_fill(~legal_mask, float('-inf'))
+            logits_masked = logits.masked_fill(~legal_mask, float("-inf"))
 
             actions = inputs["action"]
             valid = (actions >= 0) & (actions < NUM_ACTIONS)
@@ -233,7 +272,12 @@ def evaluate(model, dataloader, device):
                     teacher_probs = F.softmax(teacher_logits, dim=-1)
                     teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
                 student_log_probs = F.log_softmax(logits_unmasked_valid, dim=-1)
-                kl = F.kl_div(student_log_probs, teacher_log_probs, reduction='sum', log_target=True)
+                kl = F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="sum",
+                    log_target=True,
+                )
                 if torch.isfinite(kl):
                     total_kl += kl.item()
                 ce = -(teacher_probs * student_log_probs).sum()
@@ -278,17 +322,27 @@ MODEL_CONFIGS = {
 
 def main():
     parser = argparse.ArgumentParser(description="Train ROM-native student policy")
-    parser.add_argument("--data_dir", type=str, required=True, help="Directory of .npz dataset files")
-    parser.add_argument("--model_size", type=str, default="1m", choices=list(MODEL_CONFIGS.keys()))
+    parser.add_argument(
+        "--data_dir", type=str, required=True, help="Directory of .npz dataset files"
+    )
+    parser.add_argument(
+        "--model_size", type=str, default="1m", choices=list(MODEL_CONFIGS.keys())
+    )
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--lambda_kd", type=float, default=0.0, help="KL distillation weight")
-    parser.add_argument("--lambda_bc", type=float, default=1.0, help="Behavioral cloning weight")
+    parser.add_argument(
+        "--lambda_kd", type=float, default=0.0, help="KL distillation weight"
+    )
+    parser.add_argument(
+        "--lambda_bc", type=float, default=1.0, help="Behavioral cloning weight"
+    )
     parser.add_argument("--output_dir", type=str, default="./student_ckpts")
     parser.add_argument("--max_files", type=int, default=-1)
     parser.add_argument("--eval_every", type=int, default=1)
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu"
+    )
 
     args = parser.parse_args()
 
@@ -311,10 +365,21 @@ def main():
         dataset, [n_train, n_val], generator=torch.Generator().manual_seed(42)
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                              collate_fn=collate_fn, num_workers=4, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
-                            collate_fn=collate_fn, num_workers=4)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=4,
+        drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=4,
+    )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
@@ -325,8 +390,12 @@ def main():
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         train_metrics = train_epoch(
-            model, train_loader, optimizer, args.device,
-            lambda_kd=args.lambda_kd, lambda_bc=args.lambda_bc
+            model,
+            train_loader,
+            optimizer,
+            args.device,
+            lambda_kd=args.lambda_kd,
+            lambda_bc=args.lambda_bc,
         )
         scheduler.step()
         train_time = time.time() - t0
@@ -339,43 +408,59 @@ def main():
 
             if val_metrics["top1_acc"] > best_val_acc:
                 best_val_acc = val_metrics["top1_acc"]
-                torch.save({
-                    "model_state_dict": model.state_dict(),
-                    "config": {"preset": preset},
-                    "epoch": epoch,
-                    "val_metrics": val_metrics,
-                    "n_params": n_params,
-                }, os.path.join(args.output_dir, f"best_{args.model_size}.pt"))
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "config": {"preset": preset},
+                        "epoch": epoch,
+                        "val_metrics": val_metrics,
+                        "n_params": n_params,
+                    },
+                    os.path.join(args.output_dir, f"best_{args.model_size}.pt"),
+                )
 
-            print(f"Epoch {epoch}/{args.epochs} ({train_time:.1f}s) | "
-                  f"Loss: {train_metrics['loss']:.4f} | "
-                  f"Train Acc: {train_metrics['top1_acc']:.4f} | "
-                  f"Val Acc: {val_metrics['top1_acc']:.4f} | "
-                  f"Val KL: {val_metrics.get('kl_div', 0):.4f}")
+            print(
+                f"Epoch {epoch}/{args.epochs} ({train_time:.1f}s) | "
+                f"Loss: {train_metrics['loss']:.4f} | "
+                f"Train Acc: {train_metrics['top1_acc']:.4f} | "
+                f"Val Acc: {val_metrics['top1_acc']:.4f} | "
+                f"Val KL: {val_metrics.get('kl_div', 0):.4f}"
+            )
         else:
-            print(f"Epoch {epoch}/{args.epochs} ({train_time:.1f}s) | "
-                  f"Loss: {train_metrics['loss']:.4f} | "
-                  f"Train Acc: {train_metrics['top1_acc']:.4f}")
+            print(
+                f"Epoch {epoch}/{args.epochs} ({train_time:.1f}s) | "
+                f"Loss: {train_metrics['loss']:.4f} | "
+                f"Train Acc: {train_metrics['top1_acc']:.4f}"
+            )
 
         results_log.append(log_entry)
 
     # Save final model and results
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "config": {"preset": preset},
-        "epoch": args.epochs,
-        "n_params": n_params,
-    }, os.path.join(args.output_dir, f"final_{args.model_size}.pt"))
-
-    with open(os.path.join(args.output_dir, f"results_{args.model_size}.json"), "w") as f:
-        json.dump({
-            "model_size": args.model_size,
-            "n_params": n_params,
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
             "config": {"preset": preset},
-            "best_val_acc": best_val_acc,
-            "epochs": args.epochs,
-            "log": results_log,
-        }, f, indent=2)
+            "epoch": args.epochs,
+            "n_params": n_params,
+        },
+        os.path.join(args.output_dir, f"final_{args.model_size}.pt"),
+    )
+
+    with open(
+        os.path.join(args.output_dir, f"results_{args.model_size}.json"), "w"
+    ) as f:
+        json.dump(
+            {
+                "model_size": args.model_size,
+                "n_params": n_params,
+                "config": {"preset": preset},
+                "best_val_acc": best_val_acc,
+                "epochs": args.epochs,
+                "log": results_log,
+            },
+            f,
+            indent=2,
+        )
 
     print(f"Best validation accuracy: {best_val_acc:.4f}")
     print(f"Results saved to {args.output_dir}")

@@ -18,13 +18,18 @@ Types / status / weather / side-conditions / field / effect / category enums are
 inherited unchanged from the gen1 `mappings.py` (imported, not duplicated); gen3
 adds SPIKES (8) to the side-condition enum (see `GEN3_SIDE_COND_NAME_TO_ID`).
 """
+
 from __future__ import annotations
 
 import json
 import os
 from typing import Dict
 
-from metamon.backend.replay_parser.str_parsing import pokemon_name, move_name, clean_name
+from metamon.backend.replay_parser.str_parsing import (
+    pokemon_name,
+    move_name,
+    clean_name,
+)
 
 # Reuse the gen-agnostic categorical tables from the gen1 mappings module.
 from .mappings import (  # noqa: F401
@@ -50,10 +55,12 @@ MOVE_NAME_TO_ID: Dict[str, int] = _load("gen3moves.json")
 ABILITY_NAME_TO_ID: Dict[str, int] = _load("gen3abilities.json")
 ITEM_NAME_TO_ID: Dict[str, int] = _load("gen3items.json")
 
+
 # Gen3 side-condition enum = gen1 table + SPIKES=8 (single-enum stays lossy for
 # concurrent screens -- documented known mismatch in ROM_NATIVE_OBSERVATION.md).
 def _build_gen3_side_cond() -> Dict[str, int]:
     from .mappings import SIDE_COND_NAME_TO_ID as base
+
     t = dict(base)
     t["spikes"] = 8
     return t

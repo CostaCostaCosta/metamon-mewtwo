@@ -4,6 +4,7 @@ Extract gen3 battles from the HF metamon-raw-replays v6 parquet shards
 for the v6.1 reparse. Skips smogtours-* ids (already downloaded separately
 via the Showdown replay API).
 """
+
 import io
 import json
 import os
@@ -54,6 +55,17 @@ for i in range(41, 46):
                 with open(path, "w") as f:
                     json.dump(row, f)
             counts[fmt] += 1
-    print(f"shard {i} done. counts: {counts}, smogtours skipped: {skipped_smogtours}, ancient skipped: {skipped_ancient}", flush=True)
+    print(
+        f"shard {i} done. counts: {counts}, smogtours skipped: {skipped_smogtours}, ancient skipped: {skipped_ancient}",
+        flush=True,
+    )
 
-print("EXTRACT DONE", counts, "smogtours skipped:", skipped_smogtours, "ancient skipped:", skipped_ancient, flush=True)
+print(
+    "EXTRACT DONE",
+    counts,
+    "smogtours skipped:",
+    skipped_smogtours,
+    "ancient skipped:",
+    skipped_ancient,
+    flush=True,
+)

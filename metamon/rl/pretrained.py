@@ -1987,7 +1987,6 @@ class TaurosEnsemble(KakunaEnsemble):
 
 import metamon.rl.experimental.ensemble.register  # noqa: F401 — nickname ensemble agents
 
-
 PLASTIC_EXP1_SAVE_DIR = os.path.expanduser("~/metamon/models/plastic_space_exp1")
 
 
@@ -2009,7 +2008,9 @@ class Exp1RomNative15M(LocalPretrainedModel):
             action_space=get_action_space("MinimalActionSpace"),
             observation_space=get_observation_space("RomNativeObservationSpace"),
             reward_function=get_reward_function("AggressiveShapedReward"),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),  # unused (no tokenizable keys)
+            tokenizer=get_tokenizer(
+                "DefaultObservationSpace-v1"
+            ),  # unused (no tokenizable keys)
             battle_backend="metamon",
             dataset_config="gen1ou_plastic_replay_pacbase.yaml",
         )
@@ -2086,7 +2087,9 @@ class Gen3RomNative15M(LocalPretrainedModel):
             action_space=get_action_space("MinimalActionSpace"),
             observation_space=get_observation_space("RomNativeGen3ObservationSpace"),
             reward_function=get_reward_function("AggressiveShapedReward"),
-            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),  # unused (no tokenizable keys)
+            tokenizer=get_tokenizer(
+                "DefaultObservationSpace-v1"
+            ),  # unused (no tokenizable keys)
             battle_backend="metamon",
             dataset_config="gen3ou_rom_replay_pacbase.yaml",
         )
@@ -2145,6 +2148,7 @@ class Gen3RomOnlineV0(LocalFinetunedModel):
 # (rule-based, no neural network) instead of an ``AmagoBatchedOpponent``.
 # ---------------------------------------------------------------------------
 
+
 class _HeuristicPretrainedModel(PretrainedModel):
     """Base class for heuristic opponents registered as pretrained models.
 
@@ -2180,29 +2184,33 @@ class _HeuristicPretrainedModel(PretrainedModel):
 @pretrained_model()
 class HeuristicRandomBaseline(_HeuristicPretrainedModel):
     """Random-action heuristic registered for opponent-pool use."""
+
     _heuristic_name = "RandomBaseline"
 
 
 @pretrained_model()
 class HeuristicGrunt(_HeuristicPretrainedModel):
     """Grunt heuristic (random move, switch at low HP) for opponent-pool use."""
+
     _heuristic_name = "Grunt"
 
 
 @pretrained_model()
 class HeuristicGymLeader(_HeuristicPretrainedModel):
     """GymLeader heuristic (super-effective moves, switch at very low HP)."""
+
     _heuristic_name = "GymLeader"
 
 
 @pretrained_model()
 class HeuristicGen1BossAI(_HeuristicPretrainedModel):
     """Gen1BossAI heuristic (type-eff * BP, switch at very low HP)."""
+
     _heuristic_name = "Gen1BossAI"
 
 
 @pretrained_model()
 class HeuristicEmeraldKaizo(_HeuristicPretrainedModel):
     """EmeraldKaizo heuristic (KO-aware, type-eff * BP, aggressive switching)."""
-    _heuristic_name = "EmeraldKaizo"
 
+    _heuristic_name = "EmeraldKaizo"

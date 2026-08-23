@@ -21,24 +21,24 @@ The schema is organized as:
 All categorical values use stable integer IDs. Unknown/unrevealed values
 use an explicit UNKNOWN sentinel rather than arbitrary zeros.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Optional
 import numpy as np
 
-
 # ============================================================================
 # Sentinel values
 # ============================================================================
 
-UNKNOWN_ID = 0       # Used for any unknown/unrevealed categorical value
-NONE_ID = 0          # Used for "none" / "no status" / "no weather" etc.
-                     # NOTE: UNKNOWN and NONE share 0 because in practice
-                     # "unknown" and "no effect present" are indistinguishable
-                     # from the player's perspective for many fields.
-                     # For fields where they must be distinguished, a separate
-                     # validity mask is used.
+UNKNOWN_ID = 0  # Used for any unknown/unrevealed categorical value
+NONE_ID = 0  # Used for "none" / "no status" / "no weather" etc.
+# NOTE: UNKNOWN and NONE share 0 because in practice
+# "unknown" and "no effect present" are indistinguishable
+# from the player's perspective for many fields.
+# For fields where they must be distinguished, a separate
+# validity mask is used.
 
 
 # ============================================================================
@@ -154,12 +154,12 @@ NUM_MOVES_PER_POKEMON = 4
 
 # Per-Pokémon categorical features (int IDs)
 POKEMON_CAT_FEATURES = [
-    "species",        # National Dex ID (0=unknown)
-    "type_1",         # Type enum
-    "type_2",         # Type enum
-    "status",         # Status enum
-    "effect",         # Volatile effect enum
-    "move_1_id",      # Move ID (0=unknown)
+    "species",  # National Dex ID (0=unknown)
+    "type_1",  # Type enum
+    "type_2",  # Type enum
+    "status",  # Status enum
+    "effect",  # Volatile effect enum
+    "move_1_id",  # Move ID (0=unknown)
     "move_2_id",
     "move_3_id",
     "move_4_id",
@@ -168,25 +168,25 @@ POKEMON_CAT_LEN = len(POKEMON_CAT_FEATURES)  # 9
 
 # Per-Pokémon numerical features (normalized floats)
 POKEMON_NUM_FEATURES = [
-    "hp_fraction",       # current_hp / max_hp (0.0-1.0), -1.0 = unknown
-    "level_norm",        # level / 100.0
-    "base_atk_norm",     # base_atk / 255.0
-    "base_spa_norm",     # base_spa / 255.0
-    "base_def_norm",     # base_def / 255.0
-    "base_spd_norm",     # base_spd / 255.0
-    "base_spe_norm",     # base_spe / 255.0
-    "base_hp_norm",      # base_hp / 255.0
-    "atk_boost_norm",    # boost / 6.0 (-1.0 to 1.0)
+    "hp_fraction",  # current_hp / max_hp (0.0-1.0), -1.0 = unknown
+    "level_norm",  # level / 100.0
+    "base_atk_norm",  # base_atk / 255.0
+    "base_spa_norm",  # base_spa / 255.0
+    "base_def_norm",  # base_def / 255.0
+    "base_spd_norm",  # base_spd / 255.0
+    "base_spe_norm",  # base_spe / 255.0
+    "base_hp_norm",  # base_hp / 255.0
+    "atk_boost_norm",  # boost / 6.0 (-1.0 to 1.0)
     "spa_boost_norm",
     "def_boost_norm",
     "spd_boost_norm",
     "spe_boost_norm",
     "accuracy_boost_norm",
     "evasion_boost_norm",
-    "move_1_bp_norm",    # base_power / 200.0
-    "move_1_acc_norm",   # accuracy (0.0-1.0)
-    "move_1_pri_norm",   # priority / 5.0
-    "move_1_pp_norm",    # current_pp / max_pp (0.0-1.0), -1.0 = unknown
+    "move_1_bp_norm",  # base_power / 200.0
+    "move_1_acc_norm",  # accuracy (0.0-1.0)
+    "move_1_pri_norm",  # priority / 5.0
+    "move_1_pp_norm",  # current_pp / max_pp (0.0-1.0), -1.0 = unknown
     "move_2_bp_norm",
     "move_2_acc_norm",
     "move_2_pri_norm",
@@ -204,10 +204,10 @@ POKEMON_NUM_LEN = len(POKEMON_NUM_FEATURES)  # 31
 
 # Per-Pokémon mask features
 POKEMON_MASK_FEATURES = [
-    "valid",            # 1 if this slot has a Pokémon, 0 if padding
-    "fainted",          # 1 if fainted, 0 if alive
-    "moves_revealed",   # 1 if moves are known, 0 if hidden
-    "hp_known",         # 1 if HP is observable, 0 if unknown
+    "valid",  # 1 if this slot has a Pokémon, 0 if padding
+    "fainted",  # 1 if fainted, 0 if alive
+    "moves_revealed",  # 1 if moves are known, 0 if hidden
+    "hp_known",  # 1 if HP is observable, 0 if unknown
 ]
 POKEMON_MASK_LEN = len(POKEMON_MASK_FEATURES)  # 4
 
@@ -231,36 +231,42 @@ POKEMON_MOVE_TYPE_LEN = len(POKEMON_MOVE_TYPE_FEATURES)  # 4
 
 # Global categorical features
 GLOBAL_CAT_FEATURES = [
-    "weather",           # Weather enum
-    "field_effect",      # Field effect enum
+    "weather",  # Weather enum
+    "field_effect",  # Field effect enum
     "player_side_cond",  # Side condition enum
-    "opponent_side_cond",# Side condition enum
+    "opponent_side_cond",  # Side condition enum
     "player_prev_move",  # Move ID (0=none/unknown)
-    "opponent_prev_move",# Move ID (0=none/unknown)
+    "opponent_prev_move",  # Move ID (0=none/unknown)
 ]
 GLOBAL_CAT_LEN = len(GLOBAL_CAT_FEATURES)  # 6
 
 # Global numerical features
 GLOBAL_NUM_FEATURES = [
-    "turn_norm",           # turn / 200.0 (clipped to 1.0)
-    "opponents_remaining", # / 6.0
-    "forced_switch",       # 0.0 or 1.0
+    "turn_norm",  # turn / 200.0 (clipped to 1.0)
+    "opponents_remaining",  # / 6.0
+    "forced_switch",  # 0.0 or 1.0
 ]
 GLOBAL_NUM_LEN = len(GLOBAL_NUM_FEATURES)  # 3
 
 # Total categorical and numerical dimensions for flat representations
-TOTAL_CAT = GLOBAL_CAT_LEN + NUM_POKEMON_SLOTS * (POKEMON_CAT_LEN + POKEMON_MOVE_CAT_LEN + POKEMON_MOVE_TYPE_LEN)
+TOTAL_CAT = GLOBAL_CAT_LEN + NUM_POKEMON_SLOTS * (
+    POKEMON_CAT_LEN + POKEMON_MOVE_CAT_LEN + POKEMON_MOVE_TYPE_LEN
+)
 TOTAL_NUM = GLOBAL_NUM_LEN + NUM_POKEMON_SLOTS * POKEMON_NUM_LEN
-TOTAL_MASK = NUM_POKEMON_SLOTS * POKEMON_MASK_LEN + NUM_ACTIONS  # pokemon masks + legal action mask
+TOTAL_MASK = (
+    NUM_POKEMON_SLOTS * POKEMON_MASK_LEN + NUM_ACTIONS
+)  # pokemon masks + legal action mask
 
 
 # ============================================================================
 # Dataclasses
 # ============================================================================
 
+
 @dataclass
 class PokemonFeatures:
     """Features for a single Pokémon slot."""
+
     species: int = SPECIES_UNKNOWN
     type_1: int = TYPE_NONE
     type_2: int = TYPE_NONE
@@ -268,14 +274,20 @@ class PokemonFeatures:
     effect: int = EFFECT_NONE
 
     # Move IDs
-    move_ids: List[int] = field(default_factory=lambda: [MOVE_UNKNOWN] * NUM_MOVES_PER_POKEMON)
+    move_ids: List[int] = field(
+        default_factory=lambda: [MOVE_UNKNOWN] * NUM_MOVES_PER_POKEMON
+    )
     # Move categories
-    move_categories: List[int] = field(default_factory=lambda: [CATEGORY_NONE] * NUM_MOVES_PER_POKEMON)
+    move_categories: List[int] = field(
+        default_factory=lambda: [CATEGORY_NONE] * NUM_MOVES_PER_POKEMON
+    )
     # Move types
-    move_types: List[int] = field(default_factory=lambda: [TYPE_NONE] * NUM_MOVES_PER_POKEMON)
+    move_types: List[int] = field(
+        default_factory=lambda: [TYPE_NONE] * NUM_MOVES_PER_POKEMON
+    )
 
     # Numerical
-    hp_fraction: float = -1.0     # -1.0 = unknown
+    hp_fraction: float = -1.0  # -1.0 = unknown
     level_norm: float = 0.0
     base_atk_norm: float = 0.0
     base_spa_norm: float = 0.0
@@ -283,10 +295,16 @@ class PokemonFeatures:
     base_spd_norm: float = 0.0
     base_spe_norm: float = 0.0
     base_hp_norm: float = 0.0
-    boosts: List[float] = field(default_factory=lambda: [0.0] * 7)  # atk, spa, def, spd, spe, acc, eva
+    boosts: List[float] = field(
+        default_factory=lambda: [0.0] * 7
+    )  # atk, spa, def, spd, spe, acc, eva
     move_bp: List[float] = field(default_factory=lambda: [-2.0] * NUM_MOVES_PER_POKEMON)
-    move_acc: List[float] = field(default_factory=lambda: [-2.0] * NUM_MOVES_PER_POKEMON)
-    move_pri: List[float] = field(default_factory=lambda: [-2.0] * NUM_MOVES_PER_POKEMON)
+    move_acc: List[float] = field(
+        default_factory=lambda: [-2.0] * NUM_MOVES_PER_POKEMON
+    )
+    move_pri: List[float] = field(
+        default_factory=lambda: [-2.0] * NUM_MOVES_PER_POKEMON
+    )
     move_pp: List[float] = field(default_factory=lambda: [-2.0] * NUM_MOVES_PER_POKEMON)
 
     # Masks
@@ -299,6 +317,7 @@ class PokemonFeatures:
 @dataclass
 class GlobalFeatures:
     """Global battle state features."""
+
     weather: int = WEATHER_NONE
     field_effect: int = FIELD_NONE
     player_side_cond: int = SIDE_COND_NONE
@@ -323,56 +342,101 @@ class RomBattleState:
     from both Metamon's UniversalState and pokeemerald-expansion's
     battle engine state.
     """
+
     global_features: GlobalFeatures = field(default_factory=GlobalFeatures)
-    pokemon: List[PokemonFeatures] = field(default_factory=lambda: [PokemonFeatures() for _ in range(NUM_POKEMON_SLOTS)])
+    pokemon: List[PokemonFeatures] = field(
+        default_factory=lambda: [PokemonFeatures() for _ in range(NUM_POKEMON_SLOTS)]
+    )
     legal_action_mask: List[bool] = field(default_factory=lambda: [False] * NUM_ACTIONS)
 
     def to_tensors(self) -> dict:
         """Convert to contiguous numpy tensors suitable for model input."""
         # Global categorical
-        global_cat = np.array([
-            self.global_features.weather,
-            self.global_features.field_effect,
-            self.global_features.player_side_cond,
-            self.global_features.opponent_side_cond,
-            self.global_features.player_prev_move,
-            self.global_features.opponent_prev_move,
-        ], dtype=np.int32)
+        global_cat = np.array(
+            [
+                self.global_features.weather,
+                self.global_features.field_effect,
+                self.global_features.player_side_cond,
+                self.global_features.opponent_side_cond,
+                self.global_features.player_prev_move,
+                self.global_features.opponent_prev_move,
+            ],
+            dtype=np.int32,
+        )
 
         # Global numerical
-        global_num = np.array([
-            self.global_features.turn_norm,
-            self.global_features.opponents_remaining,
-            self.global_features.forced_switch,
-        ], dtype=np.float32)
+        global_num = np.array(
+            [
+                self.global_features.turn_norm,
+                self.global_features.opponents_remaining,
+                self.global_features.forced_switch,
+            ],
+            dtype=np.float32,
+        )
 
         # Per-Pokémon features
         pokemon_cat = np.zeros((NUM_POKEMON_SLOTS, POKEMON_CAT_LEN), dtype=np.int32)
-        pokemon_move_cat = np.zeros((NUM_POKEMON_SLOTS, POKEMON_MOVE_CAT_LEN), dtype=np.int32)
-        pokemon_move_type = np.zeros((NUM_POKEMON_SLOTS, POKEMON_MOVE_TYPE_LEN), dtype=np.int32)
+        pokemon_move_cat = np.zeros(
+            (NUM_POKEMON_SLOTS, POKEMON_MOVE_CAT_LEN), dtype=np.int32
+        )
+        pokemon_move_type = np.zeros(
+            (NUM_POKEMON_SLOTS, POKEMON_MOVE_TYPE_LEN), dtype=np.int32
+        )
         pokemon_num = np.zeros((NUM_POKEMON_SLOTS, POKEMON_NUM_LEN), dtype=np.float32)
         pokemon_mask = np.zeros((NUM_POKEMON_SLOTS, POKEMON_MASK_LEN), dtype=np.int32)
 
         for i, p in enumerate(self.pokemon):
             pokemon_cat[i] = [
-                p.species, p.type_1, p.type_2, p.status, p.effect,
-                p.move_ids[0], p.move_ids[1], p.move_ids[2], p.move_ids[3],
+                p.species,
+                p.type_1,
+                p.type_2,
+                p.status,
+                p.effect,
+                p.move_ids[0],
+                p.move_ids[1],
+                p.move_ids[2],
+                p.move_ids[3],
             ]
             pokemon_move_cat[i] = p.move_categories
             pokemon_move_type[i] = p.move_types
             pokemon_num[i] = [
-                p.hp_fraction, p.level_norm,
-                p.base_atk_norm, p.base_spa_norm, p.base_def_norm,
-                p.base_spd_norm, p.base_spe_norm, p.base_hp_norm,
-                p.boosts[0], p.boosts[1], p.boosts[2], p.boosts[3],
-                p.boosts[4], p.boosts[5], p.boosts[6],
-                p.move_bp[0], p.move_acc[0], p.move_pri[0], p.move_pp[0],
-                p.move_bp[1], p.move_acc[1], p.move_pri[1], p.move_pp[1],
-                p.move_bp[2], p.move_acc[2], p.move_pri[2], p.move_pp[2],
-                p.move_bp[3], p.move_acc[3], p.move_pri[3], p.move_pp[3],
+                p.hp_fraction,
+                p.level_norm,
+                p.base_atk_norm,
+                p.base_spa_norm,
+                p.base_def_norm,
+                p.base_spd_norm,
+                p.base_spe_norm,
+                p.base_hp_norm,
+                p.boosts[0],
+                p.boosts[1],
+                p.boosts[2],
+                p.boosts[3],
+                p.boosts[4],
+                p.boosts[5],
+                p.boosts[6],
+                p.move_bp[0],
+                p.move_acc[0],
+                p.move_pri[0],
+                p.move_pp[0],
+                p.move_bp[1],
+                p.move_acc[1],
+                p.move_pri[1],
+                p.move_pp[1],
+                p.move_bp[2],
+                p.move_acc[2],
+                p.move_pri[2],
+                p.move_pp[2],
+                p.move_bp[3],
+                p.move_acc[3],
+                p.move_pri[3],
+                p.move_pp[3],
             ]
             pokemon_mask[i] = [
-                int(p.valid), int(p.fainted), int(p.moves_revealed), int(p.hp_known),
+                int(p.valid),
+                int(p.fainted),
+                int(p.moves_revealed),
+                int(p.hp_known),
             ]
 
         legal_mask = np.array(self.legal_action_mask, dtype=np.int32)
@@ -391,20 +455,26 @@ class RomBattleState:
     def to_flat(self) -> dict:
         """Convert to flat contiguous tensors (all features concatenated)."""
         t = self.to_tensors()
-        cat = np.concatenate([
-            t["global_cat"],
-            t["pokemon_cat"].flatten(),
-            t["pokemon_move_cat"].flatten(),
-            t["pokemon_move_type"].flatten(),
-        ])
-        num = np.concatenate([
-            t["global_num"],
-            t["pokemon_num"].flatten(),
-        ])
-        mask = np.concatenate([
-            t["pokemon_mask"].flatten(),
-            t["legal_action_mask"],
-        ])
+        cat = np.concatenate(
+            [
+                t["global_cat"],
+                t["pokemon_cat"].flatten(),
+                t["pokemon_move_cat"].flatten(),
+                t["pokemon_move_type"].flatten(),
+            ]
+        )
+        num = np.concatenate(
+            [
+                t["global_num"],
+                t["pokemon_num"].flatten(),
+            ]
+        )
+        mask = np.concatenate(
+            [
+                t["pokemon_mask"].flatten(),
+                t["legal_action_mask"],
+            ]
+        )
         return {
             "categorical": cat,
             "numerical": num,
@@ -438,8 +508,12 @@ class RomBattleState:
                     "hp_fraction": p.hp_fraction,
                     "level_norm": p.level_norm,
                     "base_stats": [
-                        p.base_atk_norm, p.base_spa_norm, p.base_def_norm,
-                        p.base_spd_norm, p.base_spe_norm, p.base_hp_norm,
+                        p.base_atk_norm,
+                        p.base_spa_norm,
+                        p.base_def_norm,
+                        p.base_spd_norm,
+                        p.base_spe_norm,
+                        p.base_hp_norm,
                     ],
                     "boosts": p.boosts,
                     "move_bp": p.move_bp,

@@ -16,18 +16,28 @@ Sources:
 Run: `uv run python metamon/rom_native_obs/gen3_static/build_gen3_tables.py`
 from the repo root. Idempotent; overwrites the four json files.
 """
+
 import json, os, re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 METAMON_ROOT = os.path.dirname(os.path.dirname(HERE))  # -> metamon/ package dir
 SROOT = os.path.join(METAMON_ROOT, "backend", "showdown_dex", "static")
-POX_ITEMS = "/home/eddie/repos/poke-plastic-ox/plastic_ox/agent/gen3_items_expansion_enum.json"
+POX_ITEMS = (
+    "/home/eddie/repos/poke-plastic-ox/plastic_ox/agent/gen3_items_expansion_enum.json"
+)
 POX_ABILITIES_H = "/home/eddie/repos/poke-plastic-ox/include/constants/abilities.h"
 
 
 def _clean(n: str) -> str:
-    return (n.lower().replace(" ", "").replace("-", "").replace(".", "")
-            .replace("'", "").replace(":", "").replace("é", "e"))
+    return (
+        n.lower()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace(".", "")
+        .replace("'", "")
+        .replace(":", "")
+        .replace("é", "e")
+    )
 
 
 def build_species():
@@ -60,7 +70,9 @@ def build_abilities():
     for name, num in re.findall(r"ABILITY_([A-Z0-9_]+)\s*=\s*(\d+)", src):
         n = int(num)
         if 1 <= n <= 76:
-            out[_clean(name.replace("_", " "))] = n  # keep _ so _clean normalizes ABILITY_LIGHTNING_ROD -> lightningrod
+            out[_clean(name.replace("_", " "))] = (
+                n  # keep _ so _clean normalizes ABILITY_LIGHTNING_ROD -> lightningrod
+            )
     return out
 
 

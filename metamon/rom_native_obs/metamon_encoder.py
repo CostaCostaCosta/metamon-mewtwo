@@ -6,27 +6,60 @@ without using Metamon's text-token observation pipeline. It works
 directly from the UniversalState dataclass and the string-based names
 are converted to integer IDs via the mappings module.
 """
+
 from __future__ import annotations
 
 import copy
 from typing import Optional, List, Set
 
-from metamon.interface import UniversalState, UniversalPokemon, UniversalMove, UniversalAction
-from metamon.backend.replay_parser.str_parsing import pokemon_name, move_name, clean_name
+from metamon.interface import (
+    UniversalState,
+    UniversalPokemon,
+    UniversalMove,
+    UniversalAction,
+)
+from metamon.backend.replay_parser.str_parsing import (
+    pokemon_name,
+    move_name,
+    clean_name,
+)
 
 from .schema import (
-    RomBattleState, GlobalFeatures, PokemonFeatures,
-    NUM_POKEMON_SLOTS, NUM_MOVES_PER_POKEMON, NUM_ACTIONS,
-    SLOT_PLAYER_ACTIVE, SLOT_SWITCH_0, SLOT_OPPONENT_ACTIVE, SLOT_REVEALED_OPP_0,
-    SPECIES_UNKNOWN, MOVE_UNKNOWN, MOVE_NONE,
-    TYPE_NONE, STATUS_NONE, STATUS_FAINT, STATUS_UNKNOWN,
-    WEATHER_NONE, SIDE_COND_NONE, FIELD_NONE, EFFECT_NONE,
-    CATEGORY_NONE, CATEGORY_PHYSICAL, CATEGORY_SPECIAL, CATEGORY_STATUS,
+    RomBattleState,
+    GlobalFeatures,
+    PokemonFeatures,
+    NUM_POKEMON_SLOTS,
+    NUM_MOVES_PER_POKEMON,
+    NUM_ACTIONS,
+    SLOT_PLAYER_ACTIVE,
+    SLOT_SWITCH_0,
+    SLOT_OPPONENT_ACTIVE,
+    SLOT_REVEALED_OPP_0,
+    SPECIES_UNKNOWN,
+    MOVE_UNKNOWN,
+    MOVE_NONE,
+    TYPE_NONE,
+    STATUS_NONE,
+    STATUS_FAINT,
+    STATUS_UNKNOWN,
+    WEATHER_NONE,
+    SIDE_COND_NONE,
+    FIELD_NONE,
+    EFFECT_NONE,
+    CATEGORY_NONE,
+    CATEGORY_PHYSICAL,
+    CATEGORY_SPECIAL,
+    CATEGORY_STATUS,
 )
 from .mappings import (
-    species_name_to_id, move_name_to_id,
-    TYPE_NAME_TO_ID, STATUS_NAME_TO_ID, WEATHER_NAME_TO_ID,
-    SIDE_COND_NAME_TO_ID, FIELD_NAME_TO_ID, EFFECT_NAME_TO_ID,
+    species_name_to_id,
+    move_name_to_id,
+    TYPE_NAME_TO_ID,
+    STATUS_NAME_TO_ID,
+    WEATHER_NAME_TO_ID,
+    SIDE_COND_NAME_TO_ID,
+    FIELD_NAME_TO_ID,
+    EFFECT_NAME_TO_ID,
     CATEGORY_NAME_TO_ID,
 )
 
@@ -50,8 +83,16 @@ def _types_str_to_ids(type_str: str) -> tuple[int, int]:
     if not type_str or type_str == "notype":
         return (TYPE_NONE, TYPE_NONE)
     parts = type_str.strip().split()
-    t1 = TYPE_NAME_TO_ID.get(clean_name(parts[0]), TYPE_NONE) if len(parts) > 0 else TYPE_NONE
-    t2 = TYPE_NAME_TO_ID.get(clean_name(parts[1]), TYPE_NONE) if len(parts) > 1 else TYPE_NONE
+    t1 = (
+        TYPE_NAME_TO_ID.get(clean_name(parts[0]), TYPE_NONE)
+        if len(parts) > 0
+        else TYPE_NONE
+    )
+    t2 = (
+        TYPE_NAME_TO_ID.get(clean_name(parts[1]), TYPE_NONE)
+        if len(parts) > 1
+        else TYPE_NONE
+    )
     return (t1, t2)
 
 
@@ -142,9 +183,13 @@ def _encode_move(move: UniversalMove, is_revealed: bool = True) -> dict:
     }
 
 
-def _encode_pokemon(pokemon: UniversalPokemon, is_active: bool, 
-                     is_opponent: bool, moves_revealed: bool,
-                     hp_known: bool = True) -> PokemonFeatures:
+def _encode_pokemon(
+    pokemon: UniversalPokemon,
+    is_active: bool,
+    is_opponent: bool,
+    moves_revealed: bool,
+    hp_known: bool = True,
+) -> PokemonFeatures:
     """Encode a UniversalPokemon into PokemonFeatures.
 
     Information visibility rules:
@@ -218,6 +263,7 @@ def _encode_pokemon(pokemon: UniversalPokemon, is_active: bool,
     # Moves
     pf.moves_revealed = moves_revealed
     from metamon.interface import consistent_move_order
+
     sorted_moves = consistent_move_order(list(pokemon.moves))[:NUM_MOVES_PER_POKEMON]
 
     for i in range(NUM_MOVES_PER_POKEMON):
@@ -296,32 +342,47 @@ class RomObservationEncoder:
             field_effect=_field_str_to_id(state.battle_field),
             player_side_cond=_side_cond_str_to_id(state.player_conditions),
             opponent_side_cond=_side_cond_str_to_id(state.opponent_conditions),
-            player_prev_move=move_name_to_id(state.player_prev_move.name) if state.player_prev_move else MOVE_NONE,
-            opponent_prev_move=move_name_to_id(state.opponent_prev_move.name) if state.opponent_prev_move else MOVE_NONE,
+            player_prev_move=(
+                move_name_to_id(state.player_prev_move.name)
+                if state.player_prev_move
+                else MOVE_NONE
+            ),
+            opponent_prev_move=(
+                move_name_to_id(state.opponent_prev_move.name)
+                if state.opponent_prev_move
+                else MOVE_NONE
+            ),
             turn_norm=min(self._turn_count / 200.0, 1.0),
             opponents_remaining=float(state.opponents_remaining) / 6.0,
             forced_switch=1.0 if state.forced_switch else 0.0,
         )
 
         # Build Pokémon slots
-        pokemon_list: list[PokemonFeatures] = [PokemonFeatures() for _ in range(NUM_POKEMON_SLOTS)]
+        pokemon_list: list[PokemonFeatures] = [
+            PokemonFeatures() for _ in range(NUM_POKEMON_SLOTS)
+        ]
 
         # Slot 0: Player active Pokémon (full info)
         pokemon_list[SLOT_PLAYER_ACTIVE] = _encode_pokemon(
             state.player_active_pokemon,
-            is_active=True, is_opponent=False,
-            moves_revealed=True, hp_known=True,
+            is_active=True,
+            is_opponent=False,
+            moves_revealed=True,
+            hp_known=True,
         )
 
         # Slots 1-5: Available switches (player's bench - full info)
         from metamon.interface import consistent_pokemon_order
+
         switches = consistent_pokemon_order(state.available_switches)
         for i in range(5):
             if i < len(switches):
                 pokemon_list[SLOT_SWITCH_0 + i] = _encode_pokemon(
                     switches[i],
-                    is_active=False, is_opponent=False,
-                    moves_revealed=True, hp_known=True,
+                    is_active=False,
+                    is_opponent=False,
+                    moves_revealed=True,
+                    hp_known=True,
                 )
 
         # Slot 6: Opponent active Pokémon
@@ -330,8 +391,10 @@ class RomObservationEncoder:
         opp_moves_revealed = len(opponent.moves) > 0
         pokemon_list[SLOT_OPPONENT_ACTIVE] = _encode_pokemon(
             opponent,
-            is_active=True, is_opponent=True,
-            moves_revealed=opp_moves_revealed, hp_known=True,
+            is_active=True,
+            is_opponent=True,
+            moves_revealed=opp_moves_revealed,
+            hp_known=True,
         )
 
         # Slots 7-12: Revealed opponent Pokémon (from memory)
@@ -341,7 +404,9 @@ class RomObservationEncoder:
             if name in self.revealed_opponents
         ]
         # The active opponent is already in slot 6, skip it
-        revealed = [p for p in revealed if pokemon_name(p.base_species or p.name) != opp_key]
+        revealed = [
+            p for p in revealed if pokemon_name(p.base_species or p.name) != opp_key
+        ]
 
         for i in range(6):
             if i < len(revealed):
@@ -352,8 +417,10 @@ class RomObservationEncoder:
                 rev_moves_revealed = len(rev_pokemon.moves) > 0
                 pokemon_list[SLOT_REVEALED_OPP_0 + i] = _encode_pokemon(
                     rev_pokemon,
-                    is_active=False, is_opponent=True,
-                    moves_revealed=rev_moves_revealed, hp_known=False,
+                    is_active=False,
+                    is_opponent=True,
+                    moves_revealed=rev_moves_revealed,
+                    hp_known=False,
                 )
 
         # Build legal action mask

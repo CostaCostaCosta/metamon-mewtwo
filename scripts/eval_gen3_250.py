@@ -24,6 +24,7 @@ uv run python scripts/eval_gen3_250.py --model Gen3RomOnlineV0 --checkpoint 200 
 
 Outputs a JSON summary (win rate per opponent + composite) to --output.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -67,8 +68,12 @@ def _win_rates(res):
 def main() -> int:
     p = argparse.ArgumentParser(description="250-battle gen3 eval harness")
     p.add_argument("--model", required=True, help="Registered model name")
-    p.add_argument("--checkpoint", type=int, default=None,
-                   help="Checkpoint epoch (default = model's default; -1 = latest)")
+    p.add_argument(
+        "--checkpoint",
+        type=int,
+        default=None,
+        help="Checkpoint epoch (default = model's default; -1 = latest)",
+    )
     p.add_argument("--format", default="gen3ou")
     p.add_argument("--team_set", default="competitive")
     p.add_argument("--battles", type=int, default=250)
@@ -76,12 +81,19 @@ def main() -> int:
     p.add_argument("--srv2_checkpoint", type=int, default=48)
     p.add_argument("--skip_heuristics", action="store_true")
     p.add_argument("--skip_srv2", action="store_true")
-    p.add_argument("--heuristic_actors", type=int, default=5,
-                   help="Parallel actors per heuristic baseline")
+    p.add_argument(
+        "--heuristic_actors",
+        type=int,
+        default=5,
+        help="Parallel actors per heuristic baseline",
+    )
     p.add_argument("--srv2_parallel", type=int, default=8)
     p.add_argument("--output", default=None, help="Where to write the JSON summary")
-    p.add_argument("--log_wandb", action="store_true",
-                   help="Log per-opponent win rates to wandb (group gen3-eval250).")
+    p.add_argument(
+        "--log_wandb",
+        action="store_true",
+        help="Log per-opponent win rates to wandb (group gen3-eval250).",
+    )
     args = p.parse_args()
 
     model = get_pretrained_model(args.model)
@@ -100,14 +112,19 @@ def main() -> int:
 
     # --- 6 heuristic baselines ---
     if not args.skip_heuristics:
-        print(f"[eval] {args.model} ckpt={args.checkpoint} vs 6 heuristics "
-              f"({args.battles} battles each, seed={args.seed})")
+        print(
+            f"[eval] {args.model} ckpt={args.checkpoint} vs 6 heuristics "
+            f"({args.battles} battles each, seed={args.seed})"
+        )
         # NOTE: pretrained_vs_baselines has no seed plumbed to the heuristic envs
         # (BattleAgainstBaseline has no seed param). Reproducibility here comes
         # from the fixed battle count + fixed competitive team set; the agent is
         # seeded below. The SyntheticRLV2 path (pretrained_vs_metamon) does seed.
         import random, numpy as np, torch
-        random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
+
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
         hres = pretrained_vs_baselines(
             pretrained_model=model,
             battle_format=args.format,
@@ -121,8 +138,10 @@ def main() -> int:
 
     # --- SyntheticRLV2 reference ---
     if not args.skip_srv2:
-        print(f"[eval] {args.model} ckpt={args.checkpoint} vs SyntheticRLV2 "
-              f"ckpt={args.srv2_checkpoint} ({args.battles} battles, seed={args.seed})")
+        print(
+            f"[eval] {args.model} ckpt={args.checkpoint} vs SyntheticRLV2 "
+            f"ckpt={args.srv2_checkpoint} ({args.battles} battles, seed={args.seed})"
+        )
         sres = pretrained_vs_metamon(
             pretrained_model=model,
             battle_format=args.format,
@@ -139,13 +158,19 @@ def main() -> int:
 
     if args.log_wandb:
         import wandb
+
         run = wandb.init(
             project=os.environ.get("METAMON_WANDB_PROJECT", "metamon"),
             entity=os.environ.get("METAMON_WANDB_ENTITY"),
             group="gen3-eval250",
             name=f"eval250_{args.model}_ckpt{args.checkpoint}_seed{args.seed}",
-            config={"model": args.model, "checkpoint": args.checkpoint,
-                    "team_set": args.team_set, "battles": args.battles, "seed": args.seed},
+            config={
+                "model": args.model,
+                "checkpoint": args.checkpoint,
+                "team_set": args.team_set,
+                "battles": args.battles,
+                "seed": args.seed,
+            },
             reinit=True,
         )
         flat = {}

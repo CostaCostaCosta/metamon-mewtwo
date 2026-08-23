@@ -8,6 +8,7 @@ Can operate at two levels:
 1. Unit-level: compare individual concept mappings (species, move, status, etc.)
 2. Full-state: compare complete battle states field-by-field
 """
+
 from __future__ import annotations
 
 import json
@@ -22,23 +23,34 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from metamon.rom_native_obs.schema import (
-    RomBattleState, GlobalFeatures, PokemonFeatures,
-    NUM_POKEMON_SLOTS, NUM_ACTIONS,
-    SLOT_PLAYER_ACTIVE, SLOT_OPPONENT_ACTIVE,
-    SLOT_SWITCH_0, SLOT_REVEALED_OPP_0,
+    RomBattleState,
+    GlobalFeatures,
+    PokemonFeatures,
+    NUM_POKEMON_SLOTS,
+    NUM_ACTIONS,
+    SLOT_PLAYER_ACTIVE,
+    SLOT_OPPONENT_ACTIVE,
+    SLOT_SWITCH_0,
+    SLOT_REVEALED_OPP_0,
 )
 from metamon.rom_native_obs.mappings import (
-    SPECIES_NAME_TO_ID, MOVE_NAME_TO_ID,
-    TYPE_NAME_TO_ID, STATUS_NAME_TO_ID,
-    WEATHER_NAME_TO_ID, SIDE_COND_NAME_TO_ID,
-    FIELD_NAME_TO_ID, EFFECT_NAME_TO_ID,
-    species_name_to_id, move_name_to_id,
+    SPECIES_NAME_TO_ID,
+    MOVE_NAME_TO_ID,
+    TYPE_NAME_TO_ID,
+    STATUS_NAME_TO_ID,
+    WEATHER_NAME_TO_ID,
+    SIDE_COND_NAME_TO_ID,
+    FIELD_NAME_TO_ID,
+    EFFECT_NAME_TO_ID,
+    species_name_to_id,
+    move_name_to_id,
 )
 
 
 @dataclass
 class FieldComparison:
     """Result of comparing a single field."""
+
     field_name: str
     metamon_value: object
     rom_value: object
@@ -50,14 +62,17 @@ class FieldComparison:
         return f"  {status} {self.field_name}: metamon={self.metamon_value}, rom={self.rom_value} [{self.category}]"
 
 
-@dataclass 
+@dataclass
 class StateComparison:
     """Result of comparing two RomBattleState objects."""
+
     field_results: List[FieldComparison] = field(default_factory=list)
 
     @property
     def exact_matches(self) -> int:
-        return sum(1 for r in self.field_results if r.match and r.category == "exact_match")
+        return sum(
+            1 for r in self.field_results if r.match and r.category == "exact_match"
+        )
 
     @property
     def expected_diffs(self) -> int:
@@ -65,7 +80,9 @@ class StateComparison:
 
     @property
     def mismatches(self) -> int:
-        return sum(1 for r in self.field_results if not r.match and r.category == "mismatch")
+        return sum(
+            1 for r in self.field_results if not r.match and r.category == "mismatch"
+        )
 
     @property
     def unavailable(self) -> int:
@@ -94,8 +111,11 @@ class StateComparison:
         return "\n".join(lines)
 
 
-def compare_states(metamon_state: RomBattleState, rom_state: RomBattleState,
-                   ignore_revealed_order: bool = True) -> StateComparison:
+def compare_states(
+    metamon_state: RomBattleState,
+    rom_state: RomBattleState,
+    ignore_revealed_order: bool = True,
+) -> StateComparison:
     """Compare two RomBattleState objects field-by-field.
 
     Args:
@@ -112,34 +132,57 @@ def compare_states(metamon_state: RomBattleState, rom_state: RomBattleState,
     mg = metamon_state.global_features
     rg = rom_state.global_features
 
-    for field_name in ["weather", "field_effect", "player_side_cond", "opponent_side_cond"]:
+    for field_name in [
+        "weather",
+        "field_effect",
+        "player_side_cond",
+        "opponent_side_cond",
+    ]:
         mv = getattr(mg, field_name)
         rv = getattr(rg, field_name)
-        result.field_results.append(FieldComparison(
-            f"global.{field_name}", mv, rv, mv == rv,
-            "exact_match" if mv == rv else "mismatch"
-        ))
+        result.field_results.append(
+            FieldComparison(
+                f"global.{field_name}",
+                mv,
+                rv,
+                mv == rv,
+                "exact_match" if mv == rv else "mismatch",
+            )
+        )
 
     for field_name in ["player_prev_move", "opponent_prev_move"]:
         mv = getattr(mg, field_name)
         rv = getattr(rg, field_name)
-        result.field_results.append(FieldComparison(
-            f"global.{field_name}", mv, rv, mv == rv,
-            "exact_match" if mv == rv else "mismatch"
-        ))
+        result.field_results.append(
+            FieldComparison(
+                f"global.{field_name}",
+                mv,
+                rv,
+                mv == rv,
+                "exact_match" if mv == rv else "mismatch",
+            )
+        )
 
     for field_name in ["turn_norm", "opponents_remaining", "forced_switch"]:
         mv = getattr(mg, field_name)
         rv = getattr(rg, field_name)
         # Use tolerance for float comparison
         match = abs(mv - rv) < 0.01
-        result.field_results.append(FieldComparison(
-            f"global.{field_name}", mv, rv, match,
-            "exact_match" if match else "mismatch"
-        ))
+        result.field_results.append(
+            FieldComparison(
+                f"global.{field_name}",
+                mv,
+                rv,
+                match,
+                "exact_match" if match else "mismatch",
+            )
+        )
 
     # Compare player active and opponent active (slots 0 and 6)
-    for slot_idx, slot_name in [(SLOT_PLAYER_ACTIVE, "player_active"), (SLOT_OPPONENT_ACTIVE, "opponent_active")]:
+    for slot_idx, slot_name in [
+        (SLOT_PLAYER_ACTIVE, "player_active"),
+        (SLOT_OPPONENT_ACTIVE, "opponent_active"),
+    ]:
         mp = metamon_state.pokemon[slot_idx]
         rp = rom_state.pokemon[slot_idx]
         _compare_pokemon(result, mp, rp, slot_name)
@@ -154,16 +197,35 @@ def compare_states(metamon_state: RomBattleState, rom_state: RomBattleState,
     if ignore_revealed_order:
         # Compare as sets
         metamon_revealed = sorted(
-            [(p.species, p.status, p.fainted) for p in metamon_state.pokemon[SLOT_REVEALED_OPP_0:SLOT_REVEALED_OPP_0+6] if p.valid]
+            [
+                (p.species, p.status, p.fainted)
+                for p in metamon_state.pokemon[
+                    SLOT_REVEALED_OPP_0 : SLOT_REVEALED_OPP_0 + 6
+                ]
+                if p.valid
+            ]
         )
         rom_revealed = sorted(
-            [(p.species, p.status, p.fainted) for p in rom_state.pokemon[SLOT_REVEALED_OPP_0:SLOT_REVEALED_OPP_0+6] if p.valid]
+            [
+                (p.species, p.status, p.fainted)
+                for p in rom_state.pokemon[
+                    SLOT_REVEALED_OPP_0 : SLOT_REVEALED_OPP_0 + 6
+                ]
+                if p.valid
+            ]
         )
         match = metamon_revealed == rom_revealed
-        result.field_results.append(FieldComparison(
-            "revealed_opponents_set", metamon_revealed, rom_revealed, match,
-            "exact_match" if match else "expected_diff"  # may differ due to tracking
-        ))
+        result.field_results.append(
+            FieldComparison(
+                "revealed_opponents_set",
+                metamon_revealed,
+                rom_revealed,
+                match,
+                (
+                    "exact_match" if match else "expected_diff"
+                ),  # may differ due to tracking
+            )
+        )
     else:
         for i in range(6):
             mp = metamon_state.pokemon[SLOT_REVEALED_OPP_0 + i]
@@ -172,63 +234,96 @@ def compare_states(metamon_state: RomBattleState, rom_state: RomBattleState,
 
     # Compare legal action mask
     match = list(metamon_state.legal_action_mask) == list(rom_state.legal_action_mask)
-    result.field_results.append(FieldComparison(
-        "legal_action_mask", list(metamon_state.legal_action_mask), list(rom_state.legal_action_mask),
-        match, "exact_match" if match else "mismatch"
-    ))
+    result.field_results.append(
+        FieldComparison(
+            "legal_action_mask",
+            list(metamon_state.legal_action_mask),
+            list(rom_state.legal_action_mask),
+            match,
+            "exact_match" if match else "mismatch",
+        )
+    )
 
     return result
 
 
-def _compare_pokemon(result: StateComparison, mp: PokemonFeatures, rp: PokemonFeatures, name: str):
+def _compare_pokemon(
+    result: StateComparison, mp: PokemonFeatures, rp: PokemonFeatures, name: str
+):
     """Compare two PokemonFeatures and add results to the comparison."""
     # Validity
     match = mp.valid == rp.valid
-    result.field_results.append(FieldComparison(
-        f"{name}.valid", mp.valid, rp.valid, match,
-        "exact_match" if match else "mismatch"
-    ))
+    result.field_results.append(
+        FieldComparison(
+            f"{name}.valid",
+            mp.valid,
+            rp.valid,
+            match,
+            "exact_match" if match else "mismatch",
+        )
+    )
 
     if not mp.valid and not rp.valid:
         return  # Both are padding, nothing else to compare
 
     # Species
     match = mp.species == rp.species
-    result.field_results.append(FieldComparison(
-        f"{name}.species", mp.species, rp.species, match,
-        "exact_match" if match else "mismatch"
-    ))
+    result.field_results.append(
+        FieldComparison(
+            f"{name}.species",
+            mp.species,
+            rp.species,
+            match,
+            "exact_match" if match else "mismatch",
+        )
+    )
 
     # Types
     for i, tname in enumerate(["type_1", "type_2"]):
         mv = getattr(mp, tname)
         rv = getattr(rp, tname)
         match = mv == rv
-        result.field_results.append(FieldComparison(
-            f"{name}.{tname}", mv, rv, match,
-            "exact_match" if match else "mismatch"
-        ))
+        result.field_results.append(
+            FieldComparison(
+                f"{name}.{tname}", mv, rv, match, "exact_match" if match else "mismatch"
+            )
+        )
 
     # Status
     match = mp.status == rp.status
-    result.field_results.append(FieldComparison(
-        f"{name}.status", mp.status, rp.status, match,
-        "exact_match" if match else "mismatch"
-    ))
+    result.field_results.append(
+        FieldComparison(
+            f"{name}.status",
+            mp.status,
+            rp.status,
+            match,
+            "exact_match" if match else "mismatch",
+        )
+    )
 
     # HP fraction
     match = abs(mp.hp_fraction - rp.hp_fraction) < 0.02  # 2% tolerance for rounding
-    result.field_results.append(FieldComparison(
-        f"{name}.hp_fraction", mp.hp_fraction, rp.hp_fraction, match,
-        "exact_match" if match else "mismatch"
-    ))
+    result.field_results.append(
+        FieldComparison(
+            f"{name}.hp_fraction",
+            mp.hp_fraction,
+            rp.hp_fraction,
+            match,
+            "exact_match" if match else "mismatch",
+        )
+    )
 
     # Fainted
     match = mp.fainted == rp.fainted
-    result.field_results.append(FieldComparison(
-        f"{name}.fainted", mp.fainted, rp.fainted, match,
-        "exact_match" if match else "mismatch"
-    ))
+    result.field_results.append(
+        FieldComparison(
+            f"{name}.fainted",
+            mp.fainted,
+            rp.fainted,
+            match,
+            "exact_match" if match else "mismatch",
+        )
+    )
 
 
 def compare_json_states(metamon_json: dict, rom_json: dict) -> StateComparison:
@@ -244,10 +339,14 @@ def _json_to_state(j: dict) -> RomBattleState:
     state = RomBattleState()
     g = j["global"]
     state.global_features = GlobalFeatures(
-        weather=g["weather"], field_effect=g["field_effect"],
-        player_side_cond=g["player_side_cond"], opponent_side_cond=g["opponent_side_cond"],
-        player_prev_move=g["player_prev_move"], opponent_prev_move=g["opponent_prev_move"],
-        turn_norm=g["turn_norm"], opponents_remaining=g["opponents_remaining"],
+        weather=g["weather"],
+        field_effect=g["field_effect"],
+        player_side_cond=g["player_side_cond"],
+        opponent_side_cond=g["opponent_side_cond"],
+        player_prev_move=g["player_prev_move"],
+        opponent_prev_move=g["opponent_prev_move"],
+        turn_norm=g["turn_norm"],
+        opponents_remaining=g["opponents_remaining"],
         forced_switch=g["forced_switch"],
     )
     for i, pj in enumerate(j["pokemon"]):
@@ -286,78 +385,130 @@ def _json_to_state(j: dict) -> RomBattleState:
 # Unit-level equivalence tests
 # ============================================================================
 
+
 def test_species_mapping():
     """Test that species IDs match between Showdown and ROM for Gen1."""
     # Gen1 species use National Dex numbers in both systems
     test_cases = [
-        ("bulbasaur", 1), ("charmander", 4), ("charizard", 6),
-        ("alakazam", 65), ("gengar", 94), ("exeggutor", 103),
-        ("snorlax", 143), ("tauros", 128), ("starmie", 121),
-        ("mew", 151), ("mewtwo", 150),
+        ("bulbasaur", 1),
+        ("charmander", 4),
+        ("charizard", 6),
+        ("alakazam", 65),
+        ("gengar", 94),
+        ("exeggutor", 103),
+        ("snorlax", 143),
+        ("tauros", 128),
+        ("starmie", 121),
+        ("mew", 151),
+        ("mewtwo", 150),
     ]
     results = []
     for name, expected in test_cases:
         sid = species_name_to_id(name)
         match = sid == expected
-        results.append(FieldComparison(
-            f"species.{name}", expected, sid, match,
-            "exact_match" if match else "mismatch"
-        ))
+        results.append(
+            FieldComparison(
+                f"species.{name}",
+                expected,
+                sid,
+                match,
+                "exact_match" if match else "mismatch",
+            )
+        )
     return results
 
 
 def test_move_mapping():
     """Test that move IDs match between Showdown and ROM for Gen1."""
     test_cases = [
-        ("pound", 1), ("karatechop", 2), ("bodyslam", 34),
-        ("thunderbolt", 85), ("psychic", 94), ("explosion", 153),
-        ("hyperbeam", 63), ("blizzard", 59), ("fireblast", 126),
-        ("recover", 105), ("amnesia", 133),
+        ("pound", 1),
+        ("karatechop", 2),
+        ("bodyslam", 34),
+        ("thunderbolt", 85),
+        ("psychic", 94),
+        ("explosion", 153),
+        ("hyperbeam", 63),
+        ("blizzard", 59),
+        ("fireblast", 126),
+        ("recover", 105),
+        ("amnesia", 133),
     ]
     results = []
     for name, expected in test_cases:
         mid = move_name_to_id(name)
         match = mid == expected
-        results.append(FieldComparison(
-            f"move.{name}", expected, mid, match,
-            "exact_match" if match else "mismatch"
-        ))
+        results.append(
+            FieldComparison(
+                f"move.{name}",
+                expected,
+                mid,
+                match,
+                "exact_match" if match else "mismatch",
+            )
+        )
     return results
 
 
 def test_type_mapping():
     """Test type ID mapping."""
     test_cases = [
-        ("normal", 1), ("fire", 11), ("water", 12), ("grass", 13),
-        ("electric", 14), ("psychic", 15), ("ice", 16), ("dragon", 17),
-        ("ghost", 9), ("poison", 4), ("bug", 8), ("rock", 6),
-        ("ground", 5), ("fighting", 2), ("flying", 3),
+        ("normal", 1),
+        ("fire", 11),
+        ("water", 12),
+        ("grass", 13),
+        ("electric", 14),
+        ("psychic", 15),
+        ("ice", 16),
+        ("dragon", 17),
+        ("ghost", 9),
+        ("poison", 4),
+        ("bug", 8),
+        ("rock", 6),
+        ("ground", 5),
+        ("fighting", 2),
+        ("flying", 3),
     ]
     results = []
     for name, expected in test_cases:
         tid = TYPE_NAME_TO_ID.get(name, -1)
         match = tid == expected
-        results.append(FieldComparison(
-            f"type.{name}", expected, tid, match,
-            "exact_match" if match else "mismatch"
-        ))
+        results.append(
+            FieldComparison(
+                f"type.{name}",
+                expected,
+                tid,
+                match,
+                "exact_match" if match else "mismatch",
+            )
+        )
     return results
 
 
 def test_status_mapping():
     """Test status ID mapping."""
     test_cases = [
-        ("nostatus", 0), ("slp", 1), ("psn", 2), ("brn", 3),
-        ("frz", 4), ("par", 5), ("tox", 6), ("fnt", 7),
+        ("nostatus", 0),
+        ("slp", 1),
+        ("psn", 2),
+        ("brn", 3),
+        ("frz", 4),
+        ("par", 5),
+        ("tox", 6),
+        ("fnt", 7),
     ]
     results = []
     for name, expected in test_cases:
         sid = STATUS_NAME_TO_ID.get(name, -1)
         match = sid == expected
-        results.append(FieldComparison(
-            f"status.{name}", expected, sid, match,
-            "exact_match" if match else "mismatch"
-        ))
+        results.append(
+            FieldComparison(
+                f"status.{name}",
+                expected,
+                sid,
+                match,
+                "exact_match" if match else "mismatch",
+            )
+        )
     return results
 
 

@@ -89,6 +89,7 @@ python metamon/rom_native_obs/generate_dataset.py \
     --amago-ckpt-dir ~/metamon/models/plastic-tauros-15m-belief \
     --amago-run-name grouped_belief_control --amago-epoch 7
 """
+
 from __future__ import annotations
 
 import argparse
@@ -113,10 +114,10 @@ from metamon.rom_native_obs import RomObservationEncoder
 from metamon.interface import UniversalState
 from metamon.rom_native_obs.schema import NUM_ACTIONS
 
-
 # ============================================================================
 # Pseudo teacher
 # ============================================================================
+
 
 def make_pseudo_teacher_distribution(
     actions: np.ndarray,
@@ -181,6 +182,7 @@ def pseudo_teacher_logits(
 # ============================================================================
 # Teacher policy interface
 # ============================================================================
+
 
 class TeacherPolicy:
     """Produces (T, NUM_ACTIONS) teacher log-probs for a trajectory of states."""
@@ -519,6 +521,7 @@ class AmagoTeacher(TeacherPolicy):
 # Trajectory loading / encoding
 # ============================================================================
 
+
 def load_trajectory(path: str) -> tuple[dict, np.ndarray, dict]:
     """Load a ``*.json.lz4`` trajectory.
 
@@ -584,6 +587,7 @@ def save_trajectory_npz(output_path: str, arrays: dict) -> None:
 # CLI
 # ============================================================================
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -599,7 +603,9 @@ def main() -> None:
         required=True,
         help="Directory containing *.json.lz4 trajectory files.",
     )
-    parser.add_argument("--output-dir", required=True, help="Where to write .npz files.")
+    parser.add_argument(
+        "--output-dir", required=True, help="Where to write .npz files."
+    )
     parser.add_argument(
         "--glob", default="*.json.lz4", help="Glob pattern for trajectory files."
     )
@@ -676,8 +682,10 @@ def main() -> None:
     if not files:
         print(f"No files matched {os.path.join(args.data_dir, args.glob)}")
         sys.exit(1)
-    print(f"[generate_dataset] {len(files)} trajectories | teacher={args.teacher} "
-          f"| save_mode={args.save_mode}")
+    print(
+        f"[generate_dataset] {len(files)} trajectories | teacher={args.teacher} "
+        f"| save_mode={args.save_mode}"
+    )
 
     if args.teacher == "pseudo":
         teacher: TeacherPolicy = PseudoTeacher(chosen_mass=args.chosen_mass)
@@ -757,7 +765,9 @@ def main() -> None:
         )
 
 
-def _write_shard(collected: list[dict], output_dir: Path, name: str, idx: int, final=False):
+def _write_shard(
+    collected: list[dict], output_dir: Path, name: str, idx: int, final=False
+):
     """Concatenate trajectory arrays along T and write one .npz.
 
     Scalar (0-d) meta keys such as ``source`` / ``format`` / ``teacher_type``
@@ -773,13 +783,12 @@ def _write_shard(collected: list[dict], output_dir: Path, name: str, idx: int, f
         if np.ndim(v) == 0:
             out[k] = v
     # per-timestep array keys: concatenate along T
-    array_keys = [
-        k for k, v in first.items()
-        if k not in out and np.ndim(v) > 0
-    ]
+    array_keys = [k for k, v in first.items() if k not in out and np.ndim(v) > 0]
     for k in array_keys:
         out[k] = np.concatenate([c[k] for c in collected], axis=0)
-    out["trajectory_ids"] = np.concatenate([c["trajectory_ids"] for c in collected], axis=0)
+    out["trajectory_ids"] = np.concatenate(
+        [c["trajectory_ids"] for c in collected], axis=0
+    )
     out["n_trajectories"] = np.int32(len(collected))
     suffix = "" if final else f"_{idx:04d}"
     path = output_dir / f"{name}{suffix}.npz"

@@ -13,32 +13,60 @@ Information visibility (gen3):
 - Revealed opponent bench: species known; HP/moves/item/ability only as
   previously revealed (tracked across timesteps like the gen1 moves memory).
 """
+
 from __future__ import annotations
 
 import copy
 from typing import Optional
 
 from metamon.interface import (
-    UniversalState, UniversalPokemon, UniversalMove, consistent_move_order,
+    UniversalState,
+    UniversalPokemon,
+    UniversalMove,
+    consistent_move_order,
     consistent_pokemon_order,
 )
 from metamon.backend.replay_parser.str_parsing import pokemon_name, clean_name
 
 from .schema_gen3 import (
-    Gen3RomBattleState, Gen3PokemonFeatures, GlobalFeatures,
-    NUM_POKEMON_SLOTS, NUM_MOVES_PER_POKEMON, NUM_ACTIONS,
-    SLOT_PLAYER_ACTIVE, SLOT_SWITCH_0, SLOT_OPPONENT_ACTIVE, SLOT_REVEALED_OPP_0,
-    SPECIES_UNKNOWN, MOVE_UNKNOWN, MOVE_NONE,
-    TYPE_NONE, STATUS_NONE, STATUS_FAINT,
-    WEATHER_NONE, SIDE_COND_NONE, FIELD_NONE, EFFECT_NONE,
-    CATEGORY_NONE, ITEM_NONE, ABILITY_NONE, SPIKES_LAYER_MAX,
+    Gen3RomBattleState,
+    Gen3PokemonFeatures,
+    GlobalFeatures,
+    NUM_POKEMON_SLOTS,
+    NUM_MOVES_PER_POKEMON,
+    NUM_ACTIONS,
+    SLOT_PLAYER_ACTIVE,
+    SLOT_SWITCH_0,
+    SLOT_OPPONENT_ACTIVE,
+    SLOT_REVEALED_OPP_0,
+    SPECIES_UNKNOWN,
+    MOVE_UNKNOWN,
+    MOVE_NONE,
+    TYPE_NONE,
+    STATUS_NONE,
+    STATUS_FAINT,
+    WEATHER_NONE,
+    SIDE_COND_NONE,
+    FIELD_NONE,
+    EFFECT_NONE,
+    CATEGORY_NONE,
+    ITEM_NONE,
+    ABILITY_NONE,
+    SPIKES_LAYER_MAX,
 )
 from .mappings import (
-    TYPE_NAME_TO_ID, STATUS_NAME_TO_ID, WEATHER_NAME_TO_ID,
-    FIELD_NAME_TO_ID, EFFECT_NAME_TO_ID, CATEGORY_NAME_TO_ID,
+    TYPE_NAME_TO_ID,
+    STATUS_NAME_TO_ID,
+    WEATHER_NAME_TO_ID,
+    FIELD_NAME_TO_ID,
+    EFFECT_NAME_TO_ID,
+    CATEGORY_NAME_TO_ID,
 )
 from .mappings_gen3 import (
-    species_name_to_id, move_name_to_id, ability_name_to_id, item_name_to_id,
+    species_name_to_id,
+    move_name_to_id,
+    ability_name_to_id,
+    item_name_to_id,
     GEN3_SIDE_COND_NAME_TO_ID,
 )
 
@@ -54,8 +82,16 @@ def _types_str_to_ids(type_str: str) -> tuple[int, int]:
     if not type_str or type_str == "notype":
         return (TYPE_NONE, TYPE_NONE)
     parts = type_str.strip().split()
-    t1 = TYPE_NAME_TO_ID.get(clean_name(parts[0]), TYPE_NONE) if len(parts) > 0 else TYPE_NONE
-    t2 = TYPE_NAME_TO_ID.get(clean_name(parts[1]), TYPE_NONE) if len(parts) > 1 else TYPE_NONE
+    t1 = (
+        TYPE_NAME_TO_ID.get(clean_name(parts[0]), TYPE_NONE)
+        if len(parts) > 0
+        else TYPE_NONE
+    )
+    t2 = (
+        TYPE_NAME_TO_ID.get(clean_name(parts[1]), TYPE_NONE)
+        if len(parts) > 1
+        else TYPE_NONE
+    )
     return (t1, t2)
 
 
@@ -68,7 +104,11 @@ def _weather_str_to_id(s: str) -> int:
 
 
 def _side_cond_str_to_id(s: str) -> int:
-    return GEN3_SIDE_COND_NAME_TO_ID.get(clean_name(s), SIDE_COND_NONE) if s else SIDE_COND_NONE
+    return (
+        GEN3_SIDE_COND_NAME_TO_ID.get(clean_name(s), SIDE_COND_NONE)
+        if s
+        else SIDE_COND_NONE
+    )
 
 
 def _field_str_to_id(s: str) -> int:
@@ -85,8 +125,15 @@ def _category_str_to_id(s: str) -> int:
 
 def _encode_move(move: UniversalMove, is_revealed: bool = True) -> dict:
     if move is None:
-        return {"move_id": MOVE_UNKNOWN, "category": CATEGORY_NONE, "type": TYPE_NONE,
-                "bp": -2.0, "acc": -2.0, "pri": -2.0, "pp": -2.0}
+        return {
+            "move_id": MOVE_UNKNOWN,
+            "category": CATEGORY_NONE,
+            "type": TYPE_NONE,
+            "bp": -2.0,
+            "acc": -2.0,
+            "pri": -2.0,
+            "pp": -2.0,
+        }
     if is_revealed:
         bp = move.base_power / 200.0
         acc = float(move.accuracy) if move.accuracy is not None else -2.0
@@ -96,10 +143,20 @@ def _encode_move(move: UniversalMove, is_revealed: bool = True) -> dict:
             "move_id": move_name_to_id(move.name),
             "category": _category_str_to_id(move.category),
             "type": _type_str_to_id(move.move_type),
-            "bp": bp, "acc": acc, "pri": pri, "pp": pp,
+            "bp": bp,
+            "acc": acc,
+            "pri": pri,
+            "pp": pp,
         }
-    return {"move_id": MOVE_UNKNOWN, "category": CATEGORY_NONE, "type": TYPE_NONE,
-            "bp": -2.0, "acc": -2.0, "pri": -2.0, "pp": -2.0}
+    return {
+        "move_id": MOVE_UNKNOWN,
+        "category": CATEGORY_NONE,
+        "type": TYPE_NONE,
+        "bp": -2.0,
+        "acc": -2.0,
+        "pri": -2.0,
+        "pp": -2.0,
+    }
 
 
 def _encode_pokemon(
@@ -139,9 +196,12 @@ def _encode_pokemon(
 
     if is_active:
         pf.boosts = [
-            float(pokemon.atk_boost) / 6.0, float(pokemon.spa_boost) / 6.0,
-            float(pokemon.def_boost) / 6.0, float(pokemon.spd_boost) / 6.0,
-            float(pokemon.spe_boost) / 6.0, float(pokemon.accuracy_boost) / 6.0,
+            float(pokemon.atk_boost) / 6.0,
+            float(pokemon.spa_boost) / 6.0,
+            float(pokemon.def_boost) / 6.0,
+            float(pokemon.spd_boost) / 6.0,
+            float(pokemon.spe_boost) / 6.0,
+            float(pokemon.accuracy_boost) / 6.0,
             float(pokemon.evasion_boost) / 6.0,
         ]
     else:
@@ -151,7 +211,9 @@ def _encode_pokemon(
     pf.item_revealed = bool(item_revealed)
     pf.ability_revealed = bool(ability_revealed)
     pf.item = item_name_to_id(pokemon.item) if item_revealed else ITEM_NONE
-    pf.ability = ability_name_to_id(pokemon.ability) if ability_revealed else ABILITY_NONE
+    pf.ability = (
+        ability_name_to_id(pokemon.ability) if ability_revealed else ABILITY_NONE
+    )
 
     # Moves
     pf.moves_revealed = moves_revealed
@@ -224,22 +286,40 @@ class Gen3RomObservationEncoder:
             field_effect=_field_str_to_id(state.battle_field),
             player_side_cond=_side_cond_str_to_id(state.player_conditions),
             opponent_side_cond=_side_cond_str_to_id(state.opponent_conditions),
-            player_prev_move=move_name_to_id(state.player_prev_move.name) if state.player_prev_move else MOVE_NONE,
-            opponent_prev_move=move_name_to_id(state.opponent_prev_move.name) if state.opponent_prev_move else MOVE_NONE,
+            player_prev_move=(
+                move_name_to_id(state.player_prev_move.name)
+                if state.player_prev_move
+                else MOVE_NONE
+            ),
+            opponent_prev_move=(
+                move_name_to_id(state.opponent_prev_move.name)
+                if state.opponent_prev_move
+                else MOVE_NONE
+            ),
             turn_norm=min(self._turn_count / 200.0, 1.0),
             opponents_remaining=float(state.opponents_remaining) / 6.0,
             forced_switch=1.0 if state.forced_switch else 0.0,
             # v6.1 parsed data populates these (0-3); clamp/normalize to [0,1].
-            player_spikes_layers=min(float(getattr(state, "player_spikes_layers", 0)) / SPIKES_LAYER_MAX, 1.0),
-            opponent_spikes_layers=min(float(getattr(state, "opponent_spikes_layers", 0)) / SPIKES_LAYER_MAX, 1.0),
+            player_spikes_layers=min(
+                float(getattr(state, "player_spikes_layers", 0)) / SPIKES_LAYER_MAX, 1.0
+            ),
+            opponent_spikes_layers=min(
+                float(getattr(state, "opponent_spikes_layers", 0)) / SPIKES_LAYER_MAX,
+                1.0,
+            ),
         )
 
         pokemon_list = [Gen3PokemonFeatures() for _ in range(NUM_POKEMON_SLOTS)]
 
         # Slot 0: player active (full info)
         pokemon_list[SLOT_PLAYER_ACTIVE] = _encode_pokemon(
-            state.player_active_pokemon, is_active=True, is_opponent=False,
-            moves_revealed=True, hp_known=True, item_revealed=True, ability_revealed=True,
+            state.player_active_pokemon,
+            is_active=True,
+            is_opponent=False,
+            moves_revealed=True,
+            hp_known=True,
+            item_revealed=True,
+            ability_revealed=True,
         )
 
         # Slots 1-5: player bench (full info)
@@ -247,32 +327,46 @@ class Gen3RomObservationEncoder:
         for i in range(5):
             if i < len(switches):
                 pokemon_list[SLOT_SWITCH_0 + i] = _encode_pokemon(
-                    switches[i], is_active=False, is_opponent=False,
-                    moves_revealed=True, hp_known=True, item_revealed=True, ability_revealed=True,
+                    switches[i],
+                    is_active=False,
+                    is_opponent=False,
+                    moves_revealed=True,
+                    hp_known=True,
+                    item_revealed=True,
+                    ability_revealed=True,
                 )
 
         # Slot 6: opponent active (HP/species/types/status/boosts visible; moves/item/ability only if revealed)
         opp_moves_revealed = len(opponent.moves) > 0
         pokemon_list[SLOT_OPPONENT_ACTIVE] = _encode_pokemon(
-            opponent, is_active=True, is_opponent=True,
-            moves_revealed=opp_moves_revealed, hp_known=True,
+            opponent,
+            is_active=True,
+            is_opponent=True,
+            moves_revealed=opp_moves_revealed,
+            hp_known=True,
             item_revealed=(opp_key in self.revealed_items),
             ability_revealed=(opp_key in self.revealed_abilities),
         )
 
         # Slots 7-12: revealed opponent bench (from memory)
         revealed = [
-            self.revealed_opponents[n] for n in self.revealed_opponent_order[:6]
+            self.revealed_opponents[n]
+            for n in self.revealed_opponent_order[:6]
             if n in self.revealed_opponents
         ]
-        revealed = [p for p in revealed if pokemon_name(p.base_species or p.name) != opp_key]
+        revealed = [
+            p for p in revealed if pokemon_name(p.base_species or p.name) != opp_key
+        ]
         for i in range(6):
             if i < len(revealed):
                 rp = revealed[i]
                 rk = pokemon_name(rp.base_species or rp.name)
                 pokemon_list[SLOT_REVEALED_OPP_0 + i] = _encode_pokemon(
-                    rp, is_active=False, is_opponent=True,
-                    moves_revealed=(len(rp.moves) > 0), hp_known=False,
+                    rp,
+                    is_active=False,
+                    is_opponent=True,
+                    moves_revealed=(len(rp.moves) > 0),
+                    hp_known=False,
                     item_revealed=(rk in self.revealed_items),
                     ability_revealed=(rk in self.revealed_abilities),
                 )
