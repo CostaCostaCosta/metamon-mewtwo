@@ -814,6 +814,9 @@ class PokeEnvWrapper(OpenAIGymEnv):
             info["valid_action_count"] = self.valid_action_counter
             info["invalid_action_count"] = self.invalid_action_counter
             info["won"] = self.agent.n_won_battles > self.battle_reference
+            # Prefix with AMAGO_LOG_METRIC so AMAGO's SpecialMetricHistory picks
+            # it up and win rate appears in the wandb val/ panel during training.
+            info["AMAGO_LOG_METRIC_WinRate"] = float(info["won"])
             self.battle_reference = self.agent.n_won_battles
 
             if (

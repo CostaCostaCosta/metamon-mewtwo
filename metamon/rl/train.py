@@ -89,6 +89,12 @@ def add_cli(parser):
         help="Save a checkpoint every N epochs.",
     )
     parser.add_argument(
+        "--steps_per_epoch",
+        type=int,
+        default=25_000,
+        help="Number of training batches per epoch.",
+    )
+    parser.add_argument(
         "--batch_size_per_gpu",
         type=int,
         default=12,
@@ -309,6 +315,7 @@ if __name__ == "__main__":
         async_env_mp_context=args.async_env_mp_context,
         dloader_workers=args.dloader_workers,
         epochs=args.epochs,
+        steps_per_epoch=args.steps_per_epoch,
         grad_accum=args.grad_accum,
         batch_size_per_gpu=args.batch_size_per_gpu,
         log=args.log,

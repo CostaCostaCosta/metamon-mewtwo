@@ -1,0 +1,10 @@
+# Gen 3 OU offline mix for the ROM-distillation program (gen3_regi_plan.md SS2/SS5).
+# Mirrors gen1ou_plastic_replay_pacbase.yaml: 50% human parsed replays (v6) + 50%
+# pac-base self-play. No rating filters: smogtours replays are Unrated, and
+# MetamonDataset treats Unrated as elo 1000, so a rating filter would silently
+# drop tournament games. This is the gen3 analog of the Experiment-1 50/50 mix.
+formats:
+  - gen3ou
+replay_weight: 0.5
+self_play:
+  pac-base: 0.5

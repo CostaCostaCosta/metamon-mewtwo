@@ -1,0 +1,28 @@
+# Validation opponent pool for gen3_rom_online_v0 (gen3ou).
+#
+# Two benchmark opponents on the competitive gen3ou team set:
+#   * SyntheticRLV2 (ckpt 48) — fixed strong external reference,
+#   * Kakuna (ckpt 34) — current best Metamon policy (~63% GXE gen3ou).
+#
+# EmeraldKaizo was removed: at epoch 660+ the model dominates it (~100% WR),
+# so it provides no useful signal in validation.
+#
+# Each opponent gets its own env_name (gen3ou_vs_<label>) so win rate
+# per opponent shows up as a separate curve in the wandb val/ panel.
+#
+# Used with --val_pool instead of --val_opponent in the validator tmux window.
+defaults:
+  team_set: competitive
+  battle_backend: metamon
+  checkpoints: [null]
+  temperatures: [1.0]
+  num_agents: 1
+
+agents:
+  SyntheticRLV2:
+    model_name: SyntheticRLV2
+    checkpoints: [48]
+
+  Kakuna:
+    model_name: Kakuna
+    checkpoints: [34]

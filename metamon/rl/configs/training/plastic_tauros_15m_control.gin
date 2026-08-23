@@ -1,0 +1,16 @@
+# 15M plastic-Tauros control recipe: filtered-BC/offline-RL from scratch.
+# Used by both arms of the ROM-native Experiment 1 A/B (gen3_regi_plan.md SS6).
+# Use with smaller_multitaskagent_grouped_v2_arch.gin (text control) or
+# plastic_rom_native_15m.gin (ROM-native treatment).
+#
+# NOTE: the lapras-branch original (plastic_tauros_15m_control.gin) also bound
+# use_dynamic_damping / use_ema / log_policy_health_metrics / lr_decay_steps /
+# grad_clip_final, none of which exist on this branch's MetamonAMAGOExperiment.
+# alakazam3_isfilter.gin alone is the full from-scratch recipe here:
+# reward_multiplier=10, tau=0.008, offline_coeff=1.0, ISAdvantageFilter(beta=3),
+# lr=1.25e-4, warmup=2000, critic_loss_weight=13.5, grad_clip=1.5, l2=1e-4.
+
+include 'metamon/rl/configs/training/alakazam3_isfilter.gin'
+
+# group both A/B arms into one wandb panel for easy comparison
+MetamonAMAGOExperiment.wandb_group_name = "plastic-space-exp1"

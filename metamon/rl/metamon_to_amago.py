@@ -257,7 +257,6 @@ def make_placeholder_experiment(
         start_learning_at_epoch=float("inf"),
         start_collecting_at_epoch=float("inf"),
         train_timesteps_per_epoch=0,
-        traj_save_len=10_000_000_000,
         stagger_traj_file_lengths=False,
         train_batches_per_epoch=0,
         val_interval=None,
@@ -484,6 +483,15 @@ def make_pokepy_env(*args, **kwargs):
     if isinstance(menv, PokepyEnv):
         return MetamonAMAGOWrapper(menv)
     return VectorizedMetamonAMAGOWrapper(menv)
+
+
+# Backward-compat gin alias: legacy HF model configs (e.g. SyntheticRLV2's
+# ``synthetic_multitaskagent.gin``) bind ``@MetamonMultiTaskAgent`` / configure
+# ``MetamonMultiTaskAgent.*``, the former name of amago's ``MultiTaskAgent``.
+# Registering the subclass under the old name lets those gins load unchanged.
+@gin.configurable
+class MetamonMultiTaskAgent(amago.agent.MultiTaskAgent):
+    pass
 
 
 @gin.configurable
@@ -1667,6 +1675,403 @@ class MetamonGroupedTstepEncoderV2(amago.nets.tstep_encoders.TstepEncoder):
 
         return emb.flatten(1)
 
+
+@gin.configurable
+class MetamonRomNativeTstepEncoder(amago.nets.tstep_encoders.TstepEncoder):
+    """Timestep encoder for the ROM-native ("plastic") observation space.
+
+    Grouped_v2-lineage three-stage architecture (mirrors
+    :class:`MetamonGroupedTstepEncoderV2`), but consumes the fixed-width
+    integer/float schema from ``metamon/rom_native_obs/schema.py`` instead of
+    text tokens:
+
+        1. Pokemon perceiver (shared, block-diagonal): encodes each of the 13
+           Pokemon slots (player active, 5 switches, opponent active,
+           6 revealed opponents) from categorical-ID embeddings + numericals.
+        2. Global perceiver: weather/field/side-conds/prev-moves/legal-mask + rl2.
+        3. Fusion perceiver: combines the 14 entity embeddings.
+
+    No tokenizer. All categorical values are already integer IDs (0 = unknown).
+    """
+
+    NUM_POKEMON = 13  # rom_native schema slots
+    POKEMON_NUM_LEN = 31
+    POKEMON_MASK_LEN = 4
+    NUM_ACTIONS = 9
+    N_CAT_TOKENS = 17  # species, type1, type2, status, effect, 4 move ids, 4 move types, 4 move cats
+
+    def __init__(
+        self,
+        obs_space,
+        rl2_space,
+        # Pokemon encoder
+        d_pokemon: int = 64,
+        n_heads_pokemon: int = 4,
+        n_layers_pokemon: int = 3,
+        latent_tokens_pokemon: int = 4,
+        numerical_tokens_pokemon: int = 4,
+        pokemon_out_norm: str = "layer",
+        # Global encoder
+        d_global: int = 48,
+        n_heads_global: int = 4,
+        n_layers_global: int = 1,
+        latent_tokens_global: int = 3,
+        numerical_tokens_global: int = 2,
+        global_out_norm: str = "layer",
+        # Fusion encoder
+        d_fusion: int = 84,
+        n_heads_fusion: int = 4,
+        n_layers_fusion: int = 3,
+        latent_tokens_fusion: int = 5,
+        fusion_out_norm: str = "layer",
+        # General
+        extra_emb_dim: int = 18,
+        dropout: float = 0.05,
+        use_flex_attention: bool = False,
+        normformer_norms: bool = False,
+        qk_norm: bool = False,
+        ff_mult: int = 4,
+        pokemon_role_emb: bool = True,
+    ):
+        super().__init__(obs_space=obs_space, rl2_space=rl2_space)
+        from metamon.rom_native_obs import schema
+
+        self.d_pokemon = d_pokemon
+        self.d_global = d_global
+        self.numerical_tokens_pokemon = numerical_tokens_pokemon
+        self.numerical_tokens_global = numerical_tokens_global
+        self.extra_emb_dim = extra_emb_dim
+
+        # --- categorical embedding tables (shared across all 13 slots) ---
+        # index 0 is "unknown/none" in every ID space.
+        self.species_emb = nn.Embedding(schema.SPECIES_MAX_GEN1 + 1, d_pokemon)
+        self.move_emb = nn.Embedding(schema.MOVE_MAX_GEN1 + 1, d_pokemon)
+        self.type_emb = nn.Embedding(schema.TYPE_MAX + 1, d_pokemon)
+        self.status_emb = nn.Embedding(schema.STATUS_MAX + 1, d_pokemon)
+        self.effect_emb = nn.Embedding(schema.EFFECT_UNKNOWN + 1, d_pokemon)
+        self.move_cat_emb = nn.Embedding(schema.CATEGORY_UNKNOWN + 1, d_pokemon)
+
+        self.extra_emb = nn.Linear(rl2_space.shape[-1], extra_emb_dim)
+
+        # --- Pokemon encoder (shared for all 13, block-diagonal masking) ---
+        self.pokemon_num_fuse = nn.Linear(
+            self.POKEMON_NUM_LEN + self.POKEMON_MASK_LEN,
+            numerical_tokens_pokemon * d_pokemon,
+        )
+        pokemon_seq_len = self.N_CAT_TOKENS + numerical_tokens_pokemon
+        self.pokemon_pos = LearnablePosEmb(max_len=pokemon_seq_len, d_model=d_pokemon)
+        self.pokemon_perceiver = _BlockDiagPerceiverEncoder(
+            latent_tokens=latent_tokens_pokemon,
+            d_model=d_pokemon,
+            n_heads=n_heads_pokemon,
+            n_layers=n_layers_pokemon,
+            dropout=dropout,
+            n_groups=self.NUM_POKEMON,
+            group_seq_len=pokemon_seq_len,
+            use_flex_attention=use_flex_attention,
+            normformer_norms=normformer_norms,
+            qk_norm=qk_norm,
+            ff_mult=ff_mult,
+        )
+        self.pokemon_out_norm = Normalization(pokemon_out_norm, d_pokemon)
+        self.pokemon_proj = nn.Linear(latent_tokens_pokemon * d_pokemon, d_fusion)
+        self.register_buffer(
+            "_pokemon_pos_ids",
+            torch.arange(pokemon_seq_len, dtype=torch.long),
+        )
+        self._pokemon_role_emb = (
+            nn.Embedding(4, d_pokemon) if pokemon_role_emb else None
+        )
+        if pokemon_role_emb:
+            # 0 = player active, 1 = player bench/switch, 2 = opponent active,
+            # 3 = opponent revealed bench
+            self.register_buffer(
+                "_pokemon_role_ids",
+                torch.tensor([0, 1, 1, 1, 1, 1, 2, 3, 3, 3, 3, 3, 3], dtype=torch.long),
+            )
+
+        # --- Global encoder ---
+        self.weather_emb = nn.Embedding(schema.WEATHER_MAX + 1, d_global)
+        self.field_emb = nn.Embedding(schema.FIELD_MAX + 1, d_global)
+        self.side_cond_emb = nn.Embedding(schema.SIDE_COND_MAX + 1, d_global)
+        self.prev_move_emb = nn.Embedding(schema.MOVE_MAX_GEN1 + 1, d_global)
+        # the 9-bit legal action mask is visible battle info; fold into globals
+        self.global_num_fuse = nn.Linear(
+            schema.GLOBAL_NUM_LEN + self.NUM_ACTIONS + extra_emb_dim,
+            numerical_tokens_global * d_global,
+        )
+        global_seq_len = 6 + numerical_tokens_global
+        self.global_pos = LearnablePosEmb(max_len=global_seq_len, d_model=d_global)
+        self.global_perceiver = _FastPerceiverEncoder(
+            latent_tokens=latent_tokens_global,
+            d_model=d_global,
+            n_heads=n_heads_global,
+            n_layers=n_layers_global,
+            dropout=dropout,
+            normformer_norms=normformer_norms,
+            qk_norm=qk_norm,
+            ff_mult=ff_mult,
+        )
+        self.global_out_norm = Normalization(global_out_norm, d_global)
+        self.global_proj = nn.Linear(latent_tokens_global * d_global, d_fusion)
+        self.register_buffer(
+            "_global_pos_ids", torch.arange(global_seq_len, dtype=torch.long)
+        )
+
+        # --- Fusion encoder ---
+        self.entity_type_emb = nn.Embedding(self.NUM_POKEMON + 1, d_fusion)
+        self.fusion = _FastPerceiverEncoder(
+            latent_tokens=latent_tokens_fusion,
+            d_model=d_fusion,
+            n_heads=n_heads_fusion,
+            n_layers=n_layers_fusion,
+            dropout=dropout,
+            normformer_norms=normformer_norms,
+            qk_norm=qk_norm,
+            ff_mult=ff_mult,
+        )
+        self.fusion_out_norm = Normalization(fusion_out_norm, d_fusion)
+        self.register_buffer(
+            "_entity_type_ids", torch.arange(self.NUM_POKEMON + 1, dtype=torch.long)
+        )
+
+        self._emb_dim = self.fusion.output_dim
+
+    @property
+    def emb_dim(self):
+        return self._emb_dim
+
+    @staticmethod
+    def _emb(table: nn.Embedding, ids: torch.Tensor) -> torch.Tensor:
+        # defensive clamp: schema guarantees in-range IDs, but never crash a
+        # long run on a single bad ID.
+        return table(ids.long().clamp(0, table.num_embeddings - 1))
+
+    def inner_forward(self, obs, rl2s, log_dict=None):
+        B, L = obs["global_cat"].shape[:2]
+        out = self._inner_forward_impl(
+            obs["global_cat"].flatten(0, 1),
+            obs["global_num"].flatten(0, 1),
+            obs["pokemon_cat"].flatten(0, 1),
+            obs["pokemon_move_cat"].flatten(0, 1),
+            obs["pokemon_move_type"].flatten(0, 1),
+            obs["pokemon_num"].flatten(0, 1),
+            obs["pokemon_mask"].flatten(0, 1),
+            obs["legal_action_mask"].flatten(0, 1),
+            rl2s.flatten(0, 1),
+            log_dict,
+        )
+        return out.unflatten(0, (B, L))
+
+    def _encode_pokemon(
+        self,
+        pcat: torch.Tensor,
+        pmove_cat: torch.Tensor,
+        pmove_type: torch.Tensor,
+        pnum: torch.Tensor,
+        pmask: torch.Tensor,
+        log_dict=None,
+    ) -> torch.Tensor:
+        # (B, 13, 17, d_pokemon) categorical tokens
+        cat_tokens = torch.cat(
+            [
+                self._emb(self.species_emb, pcat[..., 0:1]),
+                self._emb(self.type_emb, pcat[..., 1:2]),
+                self._emb(self.type_emb, pcat[..., 2:3]),
+                self._emb(self.status_emb, pcat[..., 3:4]),
+                self._emb(self.effect_emb, pcat[..., 4:5]),
+                self._emb(self.move_emb, pcat[..., 5:9]),
+                self._emb(self.type_emb, pmove_type),
+                self._emb(self.move_cat_emb, pmove_cat),
+            ],
+            dim=2,
+        )
+        num_in = torch.cat([pnum.float(), pmask.float()], dim=-1)  # (B, 13, 35)
+        num_tokens = F.leaky_relu(self.pokemon_num_fuse(num_in))
+        num_tokens = num_tokens.unflatten(
+            -1, (self.numerical_tokens_pokemon, self.d_pokemon)
+        )
+        seq = torch.cat([cat_tokens, num_tokens], dim=2)  # (B, 13, seq, d)
+        seq = seq + self.pokemon_pos(self._pokemon_pos_ids)
+
+        # Concatenate all 13 slots into one sequence for block-diagonal attn
+        seq = seq.flatten(1, 2)  # (B, 13 * seq, d)
+
+        if self._pokemon_role_emb is not None:
+            role = self._pokemon_role_emb(self._pokemon_role_ids)  # (13, d)
+            tokens_per_pokemon = seq.shape[1] // self.NUM_POKEMON
+            idx = torch.arange(self.NUM_POKEMON, device=seq.device) * tokens_per_pokemon
+            role_signal = torch.zeros(
+                seq.shape[1], seq.shape[2], device=seq.device, dtype=seq.dtype
+            )
+            role_signal[idx] = role
+            seq = seq + role_signal
+
+        emb = self.pokemon_perceiver(seq, flatten=False)  # (B, 13, latent, d)
+        add_activation_log(
+            "MetamonRomNativeTstepEncoder/pokemon_perceiver", emb, log_dict
+        )
+        emb = self.pokemon_out_norm(emb)
+        emb = emb.flatten(2)
+        emb = self.pokemon_proj(emb)  # (B, 13, d_fusion)
+        add_activation_log("MetamonRomNativeTstepEncoder/pokemon_proj", emb, log_dict)
+        return emb
+
+    def _encode_global(
+        self,
+        gcat: torch.Tensor,
+        gnum: torch.Tensor,
+        legal_mask: torch.Tensor,
+        extras: torch.Tensor,
+        log_dict=None,
+    ) -> torch.Tensor:
+        cat_tokens = torch.stack(
+            [
+                self._emb(self.weather_emb, gcat[..., 0]),
+                self._emb(self.field_emb, gcat[..., 1]),
+                self._emb(self.side_cond_emb, gcat[..., 2]),
+                self._emb(self.side_cond_emb, gcat[..., 3]),
+                self._emb(self.prev_move_emb, gcat[..., 4]),
+                self._emb(self.prev_move_emb, gcat[..., 5]),
+            ],
+            dim=1,
+        )  # (B, 6, d_global)
+        num_in = torch.cat([gnum.float(), legal_mask.float(), extras], dim=-1)
+        num_tokens = F.leaky_relu(self.global_num_fuse(num_in))
+        num_tokens = num_tokens.unflatten(
+            -1, (self.numerical_tokens_global, self.d_global)
+        )
+        seq = torch.cat([cat_tokens, num_tokens], dim=1)
+        seq = seq + self.global_pos(self._global_pos_ids)
+
+        emb = self.global_perceiver(seq, flatten=False)
+        add_activation_log(
+            "MetamonRomNativeTstepEncoder/global_perceiver", emb, log_dict
+        )
+        emb = self.global_out_norm(emb)
+        emb = emb.flatten(1)
+        emb = self.global_proj(emb)
+        add_activation_log("MetamonRomNativeTstepEncoder/global_proj", emb, log_dict)
+        return emb
+
+    def _inner_forward_impl(
+        self,
+        gcat,
+        gnum,
+        pcat,
+        pmove_cat,
+        pmove_type,
+        pnum,
+        pmask,
+        legal_mask,
+        rl2s,
+        log_dict=None,
+    ):
+        pokemon_embs = self._encode_pokemon(
+            pcat, pmove_cat, pmove_type, pnum, pmask, log_dict
+        )
+
+        extras = F.leaky_relu(self.extra_emb(symlog(rl2s)))
+        global_emb = self._encode_global(gcat, gnum, legal_mask, extras, log_dict)
+        all_embs = torch.cat([pokemon_embs, global_emb.unsqueeze(1)], dim=1)
+
+        all_embs = all_embs + self.entity_type_emb(self._entity_type_ids)
+
+        emb = self.fusion(all_embs, flatten=False)
+        add_activation_log("MetamonRomNativeTstepEncoder/fusion", emb, log_dict)
+        emb = self.fusion_out_norm(emb)
+        return emb.flatten(1)
+
+
+
+
+@gin.configurable
+class MetamonRomNativeGen3TstepEncoder(MetamonRomNativeTstepEncoder):
+    """Gen 3 ROM-native ("schema v2") timestep encoder.
+
+    Subclasses :class:`MetamonRomNativeTstepEncoder` (gen1). Differences:
+    wider gen3 vocab embeddings (species 387, moves 355, abilities 77,
+    items 799), two extra per-Pokemon categorical tokens (item, ability;
+    ``N_CAT_TOKENS`` 17 -> 19), and a 6-wide mask (gen1 4 + item/ability
+    revealed). Same three-stage perceiver architecture and gin kwargs.
+    """
+
+    POKEMON_MASK_LEN = 6  # gen3: + item_revealed, ability_revealed
+    N_CAT_TOKENS = 19     # gen1 17 + item + ability
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from metamon.rom_native_obs import schema_gen3 as sg
+
+        d_pokemon = self.d_pokemon
+        d_global = self.d_global
+
+        # Rebuild the vocab-dependent embedding tables at gen3 sizes.
+        self.species_emb = nn.Embedding(sg.SPECIES_MAX_GEN3 + 1, d_pokemon)
+        self.move_emb = nn.Embedding(sg.MOVE_MAX_GEN3 + 1, d_pokemon)
+        self.item_emb = nn.Embedding(sg.ITEM_VOCAB_SIZE, d_pokemon)
+        self.ability_emb = nn.Embedding(sg.ABILITY_MAX_GEN3 + 1, d_pokemon)
+        self.prev_move_emb = nn.Embedding(sg.MOVE_MAX_GEN3 + 1, d_global)
+        self.side_cond_emb = nn.Embedding(sg.SIDE_COND_MAX_GEN3 + 1, d_global)
+
+        # Rebuild num fuse (mask now 6-wide) + pokemon pos emb (seq now 19 + num tokens).
+        self.pokemon_num_fuse = nn.Linear(
+            self.POKEMON_NUM_LEN + self.POKEMON_MASK_LEN,
+            self.numerical_tokens_pokemon * d_pokemon,
+        )
+        pokemon_seq_len = self.N_CAT_TOKENS + self.numerical_tokens_pokemon
+        self.pokemon_pos = LearnablePosEmb(max_len=pokemon_seq_len, d_model=d_pokemon)
+        self.register_buffer(
+            "_pokemon_pos_ids", torch.arange(pokemon_seq_len, dtype=torch.long)
+        )
+
+        # Rebuild global num fuse: gen3 GLOBAL_NUM_LEN is 5 (gen1 3 + 2 spikes-layer
+        # counts). The gen1 parent built this with gen1's width (3), so re-create it
+        # at the gen3 width or global_num (...,5) would mismatch the Linear input.
+        self.global_num_fuse = nn.Linear(
+            sg.GLOBAL_NUM_LEN + self.NUM_ACTIONS + self.extra_emb_dim,
+            self.numerical_tokens_global * d_global,
+        )
+
+    def _encode_pokemon(self, pcat, pmove_cat, pmove_type, pnum, pmask, log_dict=None):
+        # (B, 13, 19, d_pokemon) categorical tokens (gen1 17 + item + ability)
+        cat_tokens = torch.cat(
+            [
+                self._emb(self.species_emb, pcat[..., 0:1]),
+                self._emb(self.type_emb, pcat[..., 1:2]),
+                self._emb(self.type_emb, pcat[..., 2:3]),
+                self._emb(self.status_emb, pcat[..., 3:4]),
+                self._emb(self.effect_emb, pcat[..., 4:5]),
+                self._emb(self.move_emb, pcat[..., 5:9]),
+                self._emb(self.type_emb, pmove_type),
+                self._emb(self.move_cat_emb, pmove_cat),
+                self._emb(self.item_emb, pcat[..., 9:10]),
+                self._emb(self.ability_emb, pcat[..., 10:11]),
+            ],
+            dim=2,
+        )
+        num_in = torch.cat([pnum.float(), pmask.float()], dim=-1)  # (B, 13, 37)
+        num_tokens = F.leaky_relu(self.pokemon_num_fuse(num_in))
+        num_tokens = num_tokens.unflatten(-1, (self.numerical_tokens_pokemon, self.d_pokemon))
+        seq = torch.cat([cat_tokens, num_tokens], dim=2)
+        seq = seq + self.pokemon_pos(self._pokemon_pos_ids)
+        seq = seq.flatten(1, 2)
+
+        if self._pokemon_role_emb is not None:
+            role = self._pokemon_role_emb(self._pokemon_role_ids)
+            tokens_per_pokemon = seq.shape[1] // self.NUM_POKEMON
+            idx = torch.arange(self.NUM_POKEMON, device=seq.device) * tokens_per_pokemon
+            role_signal = torch.zeros(seq.shape[1], seq.shape[2], device=seq.device, dtype=seq.dtype)
+            role_signal[idx] = role
+            seq = seq + role_signal
+
+        emb = self.pokemon_perceiver(seq, flatten=False)
+        add_activation_log("MetamonRomNativeGen3TstepEncoder/pokemon_perceiver", emb, log_dict)
+        emb = self.pokemon_out_norm(emb)
+        emb = emb.flatten(2)
+        emb = self.pokemon_proj(emb)
+        add_activation_log("MetamonRomNativeGen3TstepEncoder/pokemon_proj", emb, log_dict)
+        return emb
 
 class MetamonAMAGODataset(RLDataset):
     """A wrapper around the ParsedReplayDataset that converts to an AMAGO RLDataset.

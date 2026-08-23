@@ -551,6 +551,10 @@ class UniversalState:
     # version-specific
     can_tera: bool  # added v3-beta
     opponent_teampreview: List[str]  # added v3
+    # Spikes layer counts (0-3) per side. Added in parsed-replays v6.1.
+    # Replays parsed before v6.1 and very old battles default to 0 (== unknown).
+    player_spikes_layers: int = 0
+    opponent_spikes_layers: int = 0
 
     @property
     def agent_format(self) -> str:
@@ -608,7 +612,22 @@ class UniversalState:
             battle_lost=state.battle_lost,
             can_tera=state.can_tera,
             opponent_teampreview=opponent_teampreview,
+            player_spikes_layers=cls._spikes_layers(state.player_conditions),
+            opponent_spikes_layers=cls._spikes_layers(state.opponent_conditions),
         )
+
+    @staticmethod
+    def _spikes_layers(conditions) -> int:
+        # In both ReplayState and poke-env Battle, the dict value for
+        # SideCondition.SPIKES is the layer count (1-3). Values for
+        # non-stackable conditions are unrelated (turn numbers), so read
+        # SPIKES explicitly and never generalize this to other conditions.
+        if not conditions:
+            return 0
+        for cond, val in conditions.items():
+            if cond == SideCondition.SPIKES:
+                return int(val) if isinstance(val, int) else 0
+        return 0
 
     @classmethod
     def from_Battle(cls, battle: Battle):
@@ -651,6 +670,8 @@ class UniversalState:
             opponents_remaining=opponents_remaining,
             can_tera=battle.can_tera is not None,
             opponent_teampreview=opponent_teampreview,
+            player_spikes_layers=cls._spikes_layers(battle.side_conditions),
+            opponent_spikes_layers=cls._spikes_layers(battle.opponent_side_conditions),
         )
     # fmt: on
 
@@ -682,6 +703,12 @@ class UniversalState:
             # backwards compat (if it's missing; it's an old version of the dataset
             # --> gen 1-4 --> no teampreview)
             data["opponent_teampreview"] = []
+
+        if "player_spikes_layers" not in data:
+            # backwards compat (pre-v6.1 parsed replays have no spikes layer counts;
+            # 0 == "unknown" for these older files)
+            data["player_spikes_layers"] = 0
+            data["opponent_spikes_layers"] = 0
 
         return cls(**data)
 
@@ -2095,3 +2122,167 @@ class TokenizedObservationSpace(ObservationSpace):
                 base_obs_key.tolist()
             )
         return obs
+
+
+@register_observation_space()
+class RomNativeObservationSpace(ObservationSpace):
+    """Text-less ROM-native observation space (see ``metamon/rom_native_obs/``).
+
+    Produces the fixed-width integer/float tensors defined by the canonical
+    ROM-native schema (``rom_native_obs/schema.py``) directly from
+    ``UniversalState`` -- no text features, no tokenizer. This is the
+    observation space used for the gen3 ROM-distillation program's
+    Experiment 1 ("plastic" space) and matches what the pokeemerald-expansion
+    C encoder produces in-ROM.
+
+    Output keys (per timestep):
+        global_cat:        (6,)      int32
+        global_num:        (3,)      float32
+        pokemon_cat:       (13, 9)   int32
+        pokemon_move_cat:  (13, 4)   int32
+        pokemon_move_type: (13, 4)   int32
+        pokemon_num:       (13, 31)  float32
+        pokemon_mask:      (13, 4)   int32
+        legal_action_mask: (9,)      int32
+
+    ``tokenizable`` is empty, so wrapping in ``TokenizedObservationSpace``
+    is a no-op pass-through (``rl/train.py`` wraps unconditionally).
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._encoder = None
+        super().__init__(*args, **kwargs)  # calls self.reset()
+
+    def reset(self):
+        """Clear revealed-opponent memory between battles."""
+        # lazy import: metamon.rom_native_obs.metamon_encoder imports from
+        # metamon.interface, so a module-level import here would be circular.
+        from metamon.rom_native_obs.metamon_encoder import RomObservationEncoder
+
+        if self._encoder is None:
+            self._encoder = RomObservationEncoder(gen=1)
+        else:
+            self._encoder.reset()
+
+    @property
+    def tokenizable(self) -> dict[str, int]:
+        return {}
+
+    @property
+    def gym_space(self) -> gym.spaces.Dict:
+        from metamon.rom_native_obs import schema
+
+        # largest categorical ID appearing in global_cat is a move ID
+        cat_hi = max(schema.MOVE_MAX_GEN1, schema.SPECIES_MAX_GEN1, schema.TYPE_MAX)
+        return gym.spaces.Dict(
+            {
+                "global_cat": gym.spaces.Box(
+                    low=0, high=cat_hi, shape=(schema.GLOBAL_CAT_LEN,), dtype=np.int32
+                ),
+                "global_num": gym.spaces.Box(
+                    low=-2.0,
+                    high=2.0,
+                    shape=(schema.GLOBAL_NUM_LEN,),
+                    dtype=np.float32,
+                ),
+                "pokemon_cat": gym.spaces.Box(
+                    low=0,
+                    high=cat_hi,
+                    shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_CAT_LEN),
+                    dtype=np.int32,
+                ),
+                "pokemon_move_cat": gym.spaces.Box(
+                    low=0,
+                    high=schema.CATEGORY_UNKNOWN,
+                    shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_MOVE_CAT_LEN),
+                    dtype=np.int32,
+                ),
+                "pokemon_move_type": gym.spaces.Box(
+                    low=0,
+                    high=schema.TYPE_MAX,
+                    shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_MOVE_TYPE_LEN),
+                    dtype=np.int32,
+                ),
+                "pokemon_num": gym.spaces.Box(
+                    low=-2.0,
+                    high=2.0,
+                    shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_NUM_LEN),
+                    dtype=np.float32,
+                ),
+                "pokemon_mask": gym.spaces.Box(
+                    low=0,
+                    high=1,
+                    shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_MASK_LEN),
+                    dtype=np.int32,
+                ),
+                "legal_action_mask": gym.spaces.Box(
+                    low=0, high=1, shape=(schema.NUM_ACTIONS,), dtype=np.int32
+                ),
+            }
+        )
+
+    def state_to_obs(self, state: UniversalState) -> dict[str, np.ndarray]:
+        return self._encoder.encode(state).to_tensors()
+
+@register_observation_space()
+class RomNativeGen3ObservationSpace(ObservationSpace):
+    """Text-less ROM-native observation space for Gen 3 ("schema v2").
+
+    Gen 3 variant of :class:`RomNativeObservationSpace` (gen1). Produces the
+    fixed-width integer/float tensors from ``rom_native_obs/schema_gen3.py`` --
+    adds per-Pokemon ``item`` + ``ability`` categoricals (11 cat) and
+    ``item_revealed`` + ``ability_revealed`` masks (6 masks), wider gen3 vocab
+    (species<=386, moves<=354, abilities<=76, items<=798), and spikes in the
+    side-condition enum. No text, no tokenizer.
+
+    Output keys (per timestep):
+        global_cat:        (6,)      int32
+        global_num:        (3,)      float32
+        pokemon_cat:       (13, 11)  int32
+        pokemon_move_cat:  (13, 4)   int32
+        pokemon_move_type: (13, 4)   int32
+        pokemon_num:       (13, 31)  float32
+        pokemon_mask:      (13, 6)   int32
+        legal_action_mask: (9,)      int32
+    """
+
+    def __init__(self, *args, **kwargs):
+        self._encoder = None
+        super().__init__(*args, **kwargs)  # calls self.reset()
+
+    def reset(self):
+        from metamon.rom_native_obs.metamon_encoder_gen3 import Gen3RomObservationEncoder
+
+        if self._encoder is None:
+            self._encoder = Gen3RomObservationEncoder(gen=3)
+        else:
+            self._encoder.reset()
+
+    @property
+    def tokenizable(self) -> dict[str, int]:
+        return {}
+
+    @property
+    def gym_space(self) -> gym.spaces.Dict:
+        from metamon.rom_native_obs import schema_gen3 as schema
+
+        cat_hi = max(
+            schema.MOVE_MAX_GEN3, schema.SPECIES_MAX_GEN3,
+            schema.TYPE_MAX, schema.ITEM_MAX_GEN3,
+        )
+        return gym.spaces.Dict(
+            {
+                "global_cat": gym.spaces.Box(low=0, high=cat_hi, shape=(schema.GLOBAL_CAT_LEN,), dtype=np.int32),
+                "global_num": gym.spaces.Box(low=-2.0, high=2.0, shape=(schema.GLOBAL_NUM_LEN,), dtype=np.float32),
+                "pokemon_cat": gym.spaces.Box(low=0, high=cat_hi, shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_CAT_LEN), dtype=np.int32),
+                "pokemon_move_cat": gym.spaces.Box(low=0, high=schema.CATEGORY_UNKNOWN, shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_MOVE_CAT_LEN), dtype=np.int32),
+                "pokemon_move_type": gym.spaces.Box(low=0, high=schema.TYPE_MAX, shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_MOVE_TYPE_LEN), dtype=np.int32),
+                "pokemon_num": gym.spaces.Box(low=-2.0, high=2.0, shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_NUM_LEN), dtype=np.float32),
+                "pokemon_mask": gym.spaces.Box(low=0, high=1, shape=(schema.NUM_POKEMON_SLOTS, schema.POKEMON_MASK_LEN), dtype=np.int32),
+                "legal_action_mask": gym.spaces.Box(low=0, high=1, shape=(schema.NUM_ACTIONS,), dtype=np.int32),
+            }
+        )
+
+    def state_to_obs(self, state: UniversalState) -> dict[str, np.ndarray]:
+        return self._encoder.encode(state).to_tensors()
+
